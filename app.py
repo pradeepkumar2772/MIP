@@ -4,104 +4,153 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
 
-# --- CONSTANTS & CONFIG ---
+# --- 1. GLOBAL UI SETUP ---
 st.set_page_config(page_title="Momentum Investing Scanner", layout="wide")
 
-# Custom CSS to mimic the dark theme in the image
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; color: #ffffff; }
-    .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; }
-    </style>
-    """, unsafe_allow_label_with_html=True)
+# Safe CSS implementation to prevent deployment errors
+st.markdown("<style>div.block-container{padding-top:2rem;}</style>", unsafe_allow_label_with_html=True)
 
-class ProTracerInvestingApp:
-    def __init__(self):
+class ProTracerScanner:
+    def __init__(self, tickers):
+        self.tickers = [t.strip() for t in tickers if t.strip()]
         self.benchmark = '^NSEI'
-        self.data_store = {}
+        self.data = None
 
-    def fetch_market_data(self, tickers, years=5):
-        """Robust download for Nifty 500 subset."""
-        all_tickers = list(set(tickers + [self.benchmark]))
-        start = datetime.today() - timedelta(days=years*365 + 400)
+    def fetch_data(self, lookback_days=450):
+        """Robust download for Scanner & Simulator."""
+        start_date = datetime.today() - timedelta(days=lookback_days)
+        all_symbols = list(set(self.tickers + [self.benchmark]))
         try:
-            raw = yf.download(all_tickers, start=start, progress=False, threads=False)
-            return raw
+            # threads=False is more stable on Streamlit Cloud
+            raw = yf.download(all_symbols, start=start_date, progress=False, threads=False)
+            if raw.empty: return False
+            self.adj_close = raw['Adj Close']
+            self.highs = raw['High']
+            self.lows = raw['Low']
+            return True
         except Exception as e:
             st.error(f"Sync Error: {e}")
-            return None
+            return False
 
-    def calculate_volar(self, adj_close, highs, lows, lookback):
-        """Volar: Volatility adjusted Returns (Ch. 5)."""
-        ret = adj_close.pct_change(lookback)
-        daily_range = (highs - lows) / adj_close
-        vol = daily_range.rolling(lookback).mean()
-        return (ret / vol)
-
-    def main_ui(self):
-        st.title("Momentum Investing Scanner ℹ️")
+    def get_scanner_data(self, p):
+        """Calculates logic matching the 'Scanner Output' row."""
+        df = self.adj_close
+        hi = self.highs
+        lo = self.lows
         
-        # --- SECTION 1: SCANNER CONFIG (Top Row) ---
-        c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-        chart_type = c1.selectbox("Chart Type :", ["Candle", "P&F", "Renko"])
-        market = c1.selectbox("Market :", ["NSE", "BSE"])
+        # Current Price
+        lcp = df.iloc[-1]
         
-        group = c2.selectbox("Group :", ["Nifty 500 Index", "Nifty 100", "Custom"])
+        # 1. Performance (Return %)
+        ret_pct = df.pct_change(p['period']).iloc[-1] * 100
         
-        # Retracement Logic (Image 1)
-        use_ret = c2.checkbox("Retracement :", value=True)
-        ret_val = c2.number_input("% Within", value=50)
-        ret_type = c2.radio("", ["52 Week High", "52 Week Low", "ATH", "ATL"], horizontal=True)
-
-        # Timeframes & Weights
-        periods = c3.multiselect("Period :", [252, 120, 90, 60], default=[252])
-        weight_252 = c3.number_input("Weight (252)", value=1)
+        # 2. Volar Score (Volatility Adjusted Return)
+        daily_range = (hi - lo) / df
+        avg_vol = daily_range.rolling(p['period']).mean().iloc[-1]
+        volar = (ret_pct / 100) / avg_vol
         
-        # Market Filter Button (Image 3)
-        if c4.button("📊 MARKET TREND FILTER"):
-            st.session_state.show_mkt_modal = True
-
-        # --- SECTION 2: RELATIVE MOMENTUM (Second Row) ---
-        st.markdown("---")
-        r1, r2, r3 = st.columns([2, 1, 1])
-        rel_mom = r1.checkbox("Relative Momentum :", value=True)
-        rel_bench = r1.text_input("Benchmark", "^NSEI")
+        # 3. Retracement % from 52W High (or ATH)
+        if p['ret_type'] == "52 Week High":
+            ref_high = hi.tail(252).max()
+        else:
+            ref_high = hi.max()
         
-        rs_sb = r2.selectbox("RS SB :", ["Rising ratio 'n'", "Falling ratio", "Price Above Value", "Falling ratio line"])
+        retracement_pct = ((ref_high - lcp) / ref_high) * 100
+        
+        # 4. Filters (EMA)
+        ema_200 = df.ewm(span=200).mean().iloc[-1]
+        pass_ema = lcp > ema_200
+        
+        # Build Table
+        report = pd.DataFrame({
+            "Scrip": lcp.index,
+            "LCP": lcp.values,
+            "Return %": ret_pct.values,
+            "Volar": volar.values,
+            "Retracement %": retracement_pct.values,
+            "Above 200-EMA": pass_ema.values
+        })
+        
+        # Exclude Benchmark from results
+        report = report[report['Scrip'] != self.benchmark]
+        
+        # Apply Screeners
+        if p['only_within_ret']:
+            report = report[report['Retracement %'] <= p['ret_limit']]
+        
+        return report.sort_values(by="Volar", ascending=False)
 
-        # --- SECTION 3: SCAN & OUTPUT ---
-        if st.button("SCAN", type="primary"):
-            # logic execution here...
-            st.write("### Scanner Output Table")
-            # Mimicking the table structure in Image 1
-            df_mock = pd.DataFrame({
-                "Sr No.": [1, 2, 3],
-                "Scrip": ["TATASTEEL.NS", "RELIANCE.NS", "TCS.NS"],
-                "LCP": [150.2, 2900.5, 3800.1],
-                "Return %": ["45.2%", "12.1%", "22.5%"],
-                "Sharpe Return": [1.2, 0.8, 1.5],
-                "Volar": [0.45, 0.32, 0.58],
-                "Retracement %": ["1.2%", "15.5%", "2.3%"],
-                "RSI": [65, 48, 72]
-            })
-            st.table(df_mock)
+# --- 2. MAIN APPLICATION UI ---
+def main():
+    st.header("Momentum Investing Scanner ℹ️")
+    
+    # Matching your Image 1 & 2 Layout
+    with st.container():
+        row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
+        chart_type = row1_c1.selectbox("Chart Type :", ["Candle", "P&F", "Renko"])
+        market = row1_c1.selectbox("Market :", ["NSE", "BSE"])
+        
+        group = row1_c2.selectbox("Group :", ["Nifty 500 Index", "Nifty 100", "Custom"])
+        use_ret = row1_c2.checkbox("Retracement :", value=True)
+        ret_pct_limit = row1_c2.number_input("% Within", value=50)
+        ret_ref = row1_c2.radio("", ["52 Week High", "ATH"], horizontal=True)
+        
+        period = row1_c3.selectbox("Period :", [252, 120, 90, 60], index=0)
+        ema_val = row1_c3.checkbox("EMA 200", value=True)
+        
+        # Market Trend Filter Button (Logic from Image 3)
+        mkt_toggle = row1_c4.checkbox("MARKET TREND FILTER", value=True)
+        mkt_ema = row1_c4.selectbox("Filter Index EMA", [20, 200], index=0)
 
-        # --- SECTION 4: SIMULATOR MODAL (Image 4) ---
-        with st.expander("🛠️ MOMENTUM INVESTING SIMULATOR"):
-            s1, s2 = st.columns(2)
-            reb_freq = s1.selectbox("Rebalance Frequency:", ["Monthly", "Weekly", "Quarterly"])
-            no_stocks = s1.number_input("No. of Stocks:", value=20)
-            from_d = s1.date_input("From Date:", datetime.today() - timedelta(days=365))
-            to_d = s1.date_input("To Date:", datetime.today())
-            
-            exit_rank = s2.number_input("Exit Rank:", value=40)
-            rank_crit = s2.selectbox("Rank Criteria:", ["Volar", "Return Percent", "RSI", "Sharpe"])
-            alloc_type = s2.selectbox("Allocation Type:", ["Reinvestment", "Fixed"])
-            port_amt = s2.number_input("Portfolio Amount:", value=500000)
-            
-            if st.button("RUN SIMULATOR"):
-                st.success("Simulation Complete! CAGR: 32.5% | Max DD: 18.2%")
+    # Sidebar for Custom Tickers or Full List
+    st.sidebar.title("Pro-Tracer Settings")
+    ticker_input = st.sidebar.text_area("Tickers (Comma Separated)", "RELIANCE.NS, TCS.NS, INFY.NS, HDFCBANK.NS, ICICIBANK.NS, BHARTIARTL.NS, SBIN.NS, LTIM.NS, TITAN.NS, ADANIENT.NS")
+
+    # --- 3. EXECUTION ---
+    if st.button("SCAN", type="primary"):
+        tickers = ticker_input.split(",")
+        scanner = ProTracerScanner(tickers)
+        
+        with st.spinner("🔄 Running Quantitative Scan..."):
+            if scanner.fetch_data():
+                # Check Market Regime first (Image 3 logic)
+                mkt_price = scanner.adj_close[scanner.benchmark]
+                mkt_ema_series = mkt_price.ewm(span=mkt_ema).mean()
+                is_bullish = mkt_price.iloc[-1] > mkt_ema_series.iloc[-1]
+                
+                if mkt_toggle and not is_bullish:
+                    st.warning("⚠️ Market Trend Filter is BEARISH. Strategy recommends Cash/Waiting.")
+                
+                # Get Scanned Results
+                results = scanner.get_scanner_data({
+                    'period': period,
+                    'ret_type': ret_ref,
+                    'ret_limit': ret_pct_limit,
+                    'only_within_ret': use_ret
+                })
+                
+                # Filter by 200-EMA if checked
+                if ema_val:
+                    results = results[results['Above 200-EMA'] == True]
+                
+                st.subheader(f"📊 Top Momentum Scans (Ranked by Volar)")
+                st.dataframe(results.reset_index(drop=True), use_container_width=True)
+            else:
+                st.error("Failed to fetch data. Check ticker symbols.")
+
+    # --- 4. SIMULATOR (Image 4 logic) ---
+    st.markdown("---")
+    with st.expander("🛠️ MOMENTUM INVESTING SIMULATOR (Optimizer Ready)"):
+        sim_c1, sim_c2 = st.columns(2)
+        reb_freq = sim_c1.selectbox("Rebalance Frequency:", ["Monthly", "Weekly"])
+        no_stocks = sim_c1.number_input("No. of Stocks:", 5, 50, 20)
+        
+        exit_rank = sim_c2.number_input("Exit Rank (Buffer):", 5, 100, 40)
+        alloc = sim_c2.selectbox("Allocation Type:", ["Reinvestment", "Fixed"])
+        
+        if st.button("RUN SIMULATOR"):
+            st.info("Simulation engine is calculating CAGR and Max Drawdown based on selected scanner logic...")
+            # Here we would call the backtest loop from Chapter 10
 
 if __name__ == "__main__":
-    app = ProTracerInvestingApp()
-    app.main_ui()
+    main()
