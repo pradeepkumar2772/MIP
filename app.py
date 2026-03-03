@@ -5,85 +5,150 @@ import streamlit as st
 import datetime
 import numpy as np
 
-# --- Page Config ---
-st.set_page_config(page_title="Pro-Tracer v2.2", layout="wide")
-st.title("🛡️ Pro-Tracer: Triple-Parameter Optimizer")
+# --- Page Configuration ---
+st.set_page_config(page_title="Pro-Tracer v2.0", layout="wide")
+
+st.title("🛡️ Pro-Tracer: The Quantitative Engine")
 st.sidebar.header("Global Settings")
 
-ticker = st.sidebar.text_input("Ticker Symbol", "TRENT.NS")
-start_date = st.sidebar.date_input("Start Date", datetime.date(2018, 1, 1))
+# --- Global Inputs ---
+ticker = st.sidebar.text_input("Ticker Symbol", "RELIANCE.NS")
+start_date = st.sidebar.date_input("Start Date", datetime.date(1990, 1, 1), min_value=datetime.date(1990, 1, 1))
 end_date = st.sidebar.date_input("End Date", datetime.date.today())
+
+# Module Navigation
+mode = st.sidebar.radio("Select Module", ["Brute-Force Optimizer", "Trade Detailer"])
 
 @st.cache_data
 def get_data(symbol, start, end):
-    data = yf.download(symbol, start=start, end=end)
-    if not data.empty and isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-    return data
+    try:
+        data = yf.download(symbol, start=start, end=end)
+        if not data.empty:
+            # Handle potential MultiIndex columns from newer yfinance versions
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+            return data
+    except Exception as e:
+        st.error(f"Data error: {e}")
+    return pd.DataFrame()
 
 df_raw = get_data(ticker, start_date, end_date)
 
 if df_raw.empty:
-    st.warning("Please enter a valid ticker.")
+    st.warning("Awaiting data... Please verify the ticker and date range.")
 else:
-    st.header("🔍 Brute-Force: RSI + EMA + Stop Loss")
-    st.info("Finding the combination that maximizes ROI while minimizing Drawdown.")
-
-    # Optimization Ranges
-    # We use steps (e.g., 10) to keep the web-app fast. Change to 1 for maximum precision.
-    rsi_range = range(10, 101, 10) 
-    ema_range = range(5, 31, 5)
-    sl_range = [3, 5, 8, 12] # Testing 3%, 5%, 8%, and 12% Stop Losses
-
-    if st.button("🚀 Run Triple Optimization"):
-        results = []
-        df = df_raw.copy()
-        
-        # Calculate Market Returns
-        df['Ret'] = df['Close'].pct_change()
-        
-        progress_bar = st.progress(0)
-        total_steps = len(rsi_range) * len(ema_range) * len(sl_range)
-        current_step = 0
-
-        for r_len in rsi_range:
-            rsi_series = ta.rsi(df['Close'], length=r_len)
+    # --- MODULE 1: BRUTE-FORCE OPTIMIZER ---
+    if mode == "Brute-Force Optimizer":
+        st.header("🔍 Brute-Force Parameter Optimizer")
+        if st.button("🚀 Run Full Optimization"):
+            results = []
+            df = df_raw.copy()
+            df['Market_Ret'] = df['Close'].pct_change()
             
-            for e_len in ema_range:
-                rsi_ema = ta.ema(rsi_series, length=e_len)
-                
-                for sl_val in sl_range:
-                    current_step += 1
-                    # Simple simulation of the Stop Loss logic
-                    # 1. Base Strategy (RSI > EMA)
+            # Step 5 for speed; change to 1 for high precision (but slower)
+            rsi_range = range(3, 253, 5) 
+            ema_range = range(3, 51, 5)
+            
+            progress_bar = st.progress(0)
+            total_steps = len(rsi_range)
+
+            for i, r_len in enumerate(rsi_range):
+                progress_bar.progress(i / total_steps)
+                rsi_series = ta.rsi(df['Close'], length=r_len)
+                for e_len in ema_range:
+                    rsi_ema = ta.ema(rsi_series, length=e_len)
                     signal = (rsi_series > rsi_ema).astype(int)
-                    
-                    # 2. Apply Returns
-                    strat_ret = (df['Ret'] * signal.shift(1)).fillna(0)
-                    
-                    # 3. Stop Loss Filter: If a daily loss exceeds the SL, we cap it.
-                    # This is a simplified "Daily Stop" for the optimizer.
-                    # For precise trade-by-trade stops, use the 'Trade Detailer' module.
-                    strat_ret = strat_ret.apply(lambda x: max(x, -sl_val/100))
-                    
+                    strat_ret = (df['Market_Ret'] * signal.shift(1)).fillna(0)
                     cum_ret = (1 + strat_ret).cumprod()
+                    
                     total_return = cum_ret.iloc[-1] - 1
                     max_dd = ((cum_ret - cum_ret.cummax()) / cum_ret.cummax()).min()
                     
                     results.append({
-                        'RSI': r_len,
-                        'EMA': e_len,
-                        'StopLoss %': sl_val,
+                        'RSI_Len': r_len, 'EMA_Len': e_len,
                         'ROI %': round(total_return * 100, 2),
                         'Max_DD %': round(max_dd * 100, 2),
-                        'Profit/DD Ratio': round(abs(total_return/max_dd), 2) if max_dd != 0 else 0
+                        'Risk_Score': round(abs(total_return / max_dd), 2) if max_dd != 0 else 0
                     })
-                    
-            progress_bar.progress(current_step / total_steps)
+            st.success("Optimization Complete!")
+            st.dataframe(pd.DataFrame(results).sort_values('ROI %', ascending=False).head(20))
 
-        res_df = pd.DataFrame(results)
-        st.success("Optimization Complete!")
+    # --- MODULE 2: TRADE DETAILER ---
+    elif mode == "Trade Detailer":
+        st.header("📜 Trade Detailer & Advanced Scorecard")
+        col1, col2 = st.columns(2)
+        in_rsi = col1.number_input("RSI Look-back", value=14, min_value=3)
+        in_ema = col2.number_input("EMA (Average Line) Length", value=9, min_value=3)
         
-        st.write("### Top 15 Combinations (Ranked by Profit/DD Ratio)")
-        # We sort by Profit/DD Ratio because that finds the most "Stable" strategy
-        st.dataframe(res_df.sort_values('Profit/DD Ratio', ascending=False).head(15))
+        if st.button("📊 Generate Quant Report"):
+            df = df_raw.copy()
+            df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
+            df['RSI_EMA'] = ta.ema(df['RSI'], length=in_ema)
+            df['Signal'] = (df['RSI'] > df['RSI_EMA']).astype(int)
+            df['Change'] = df['Signal'].diff()
+
+            trades = []
+            in_trade = False
+            for i in range(1, len(df)):
+                if df['Change'].iloc[i] == 1 and not in_trade:
+                    in_trade, entry_date, entry_price = True, df.index[i], df['Close'].iloc[i]
+                elif df['Change'].iloc[i] == -1 and in_trade:
+                    in_trade, exit_date, exit_price = False, df.index[i], df['Close'].iloc[i]
+                    pnl = ((exit_price - entry_price) / entry_price) * 100
+                    trades.append({
+                        "Entry Date": entry_date.date(), 
+                        "Exit Date": exit_date.date(), 
+                        "Entry Price": float(entry_price), 
+                        "Exit Price": float(exit_price), 
+                        "P&L %": float(pnl)
+                    })
+
+            if trades:
+                t_df = pd.DataFrame(trades)
+                
+                # --- Advanced Calculations ---
+                daily_ret = (df['Close'].pct_change() * df['Signal'].shift(1)).fillna(0)
+                cum_strategy = (1 + daily_ret).cumprod()
+                
+                total_ret_val = cum_strategy.iloc[-1] - 1
+                num_years = max((df.index[-1] - df.index[0]).days / 365.25, 0.1)
+                cagr = ((1 + total_ret_val)**(1/num_years) - 1) if total_ret_val > -1 else -1
+                max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
+                
+                # Win/Loss Calculations
+                win_rate = (t_df['P&L %'] > 0).mean()
+                avg_win = t_df[t_df['P&L %'] > 0]['P&L %'].mean() if not t_df[t_df['P&L %'] > 0].empty else 0
+                avg_loss = abs(t_df[t_df['P&L %'] < 0]['P&L %'].mean()) if not t_df[t_df['P&L %'] < 0].empty else 0
+                expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+                
+                sum_gains = t_df[t_df['P&L %'] > 0]['P&L %'].sum()
+                sum_losses = abs(t_df[t_df['P&L %'] < 0]['P&L %'].sum())
+                profit_factor = sum_gains / sum_losses if sum_losses != 0 else np.inf
+
+                # --- 1. Quant Scorecard ---
+                st.subheader("📊 Pro-Tracer Quant Scorecard")
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("Total Return", f"{total_ret_val*100:.2f}%")
+                s2.metric("CAGR", f"{cagr*100:.2f}%")
+                s3.metric("Max Drawdown", f"{max_dd_val*100:.2f}%")
+                s4.metric("Expectancy", f"{expectancy:.2f}%")
+                
+                s5, s6, s7, s8 = st.columns(4)
+                s5.metric("Win Rate", f"{win_rate*100:.1f}%")
+                s6.metric("Profit Factor", f"{profit_factor:.2f}")
+                s7.metric("Avg Trade %", f"{t_df['P&L %'].mean():.2f}%")
+                s8.metric("Num Trades", len(t_df))
+
+                # --- 2. Compounding Calculator ---
+                st.subheader("💰 The Power of Compounding")
+                initial_capital = 100000
+                final_value = initial_capital * (1 + total_ret_val)
+                st.write(f"If you started with **₹1,00,000**, it would now be worth: **₹{final_value:,.2f}**")
+                
+                comp_curve = initial_capital * cum_strategy
+                st.line_chart(comp_curve)
+
+                st.write("### Detailed Trade Ledger")
+                st.dataframe(t_df)
+            else:
+                st.warning("No trades found.")
