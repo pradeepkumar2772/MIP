@@ -32,3 +32,16 @@ max_drawdown = drawdown.min()
 
 print(f"Total Strategy Return: {(data['Cumulative_Strategy'].iloc[-1] - 1) * 100:.2f}%")
 print(f"Max Drawdown: {max_drawdown * 100:.2f}%")
+
+# 6. Plotting the Results
+plt.figure(figsize=(12, 6))
+plt.plot(data['Cumulative_Strategy'], label='RSI Strategy', color='green')
+plt.plot(data['Cumulative_Market'], label='Buy & Hold Market', color='blue', alpha=0.5)
+plt.title(f"Pro-Tracer: RSI Backtest Results for {ticker}")
+plt.xlabel("Date")
+plt.ylabel("Growth of $1")
+plt.legend()
+plt.grid(True)
+
+# This is the line that actually pops the window up!
+plt.show()
