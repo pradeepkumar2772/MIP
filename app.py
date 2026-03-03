@@ -3,80 +3,68 @@ import pandas as pd
 import pandas_ta as ta
 import streamlit as st
 import datetime
-import numpy as np
 
-# --- Streamlit UI Setup ---
-st.title("🛡️ Pro-Tracer: Legacy Optimizer (1990+)")
-st.markdown("### RSI vs EMA Brute-Force + Risk Metrics")
+# --- UI Setup ---
+st.title("📜 Pro-Tracer: Detailed Trade Log")
 
-# 1. User Inputs
-ticker = st.text_input("Ticker Symbol", "RELIANCE.NS")
+# Inputs for the SPECIFIC parameters you want to inspect
+col1, col2, col3 = st.columns(3)
+ticker = col1.text_input("Ticker", "RELIANCE.NS")
+best_rsi = col2.number_input("RSI Length", value=14)
+best_ema = col3.number_input("EMA Length (Average Line)", value=9)
 
-col1, col2 = st.columns(2)
-# Updated to allow 1990
-start_date = col1.date_input("Start Date", datetime.date(1990, 1, 1), min_value=datetime.date(1990, 1, 1))
-end_date = col2.date_input("End Date", datetime.date(2026, 3, 1))
+start_date = st.date_input("Start Date", datetime.date(2020, 1, 1))
 
-# 2. Optimization Parameters
-rsi_min, rsi_max = 3, 252
-ema_min, ema_max = 3, 50
-
-if st.button("🚀 Start Full Optimization"):
-    with st.spinner("Downloading and processing decades of data..."):
-        df = yf.download(ticker, start=start_date, end=end_date)
-        df.columns = df.columns.get_level_values(0)
+if st.button("Generate Trade Book"):
+    df = yf.download(ticker, start=start_date)
+    df.columns = df.columns.get_level_values(0)
     
-    if df.empty:
-        st.error("No data found. Note: Many NSE stocks only have data from the late 90s.")
-    else:
-        results = []
-        progress_bar = st.progress(0)
-        
-        # Calculate market returns once
-        df['Market_Ret'] = df['Close'].pct_change()
-        
-        total_steps = (rsi_max - rsi_min + 1)
-        for i, r_len in enumerate(range(rsi_min, rsi_max + 1)):
-            if i % 15 == 0:
-                progress_bar.progress(i / total_steps)
-                
-            rsi_series = ta.rsi(df['Close'], length=r_len)
+    # 1. Indicator Calculation
+    df['RSI'] = ta.rsi(df['Close'], length=best_rsi)
+    df['RSI_EMA'] = ta.ema(df['RSI'], length=best_ema)
+    
+    # 2. Identify Signals
+    # 1 = Long, 0 = Cash
+    df['Signal'] = (df['RSI'] > df['RSI_EMA']).astype(int)
+    df['Position_Change'] = df['Signal'].diff()
+
+    # 3. Extract Individual Trades
+    trades = []
+    in_trade = False
+    entry_date = None
+    entry_price = 0
+
+    for i in range(1, len(df)):
+        # Entry Logic (Crossover Up)
+        if df['Position_Change'].iloc[i] == 1 and not in_trade:
+            in_trade = True
+            entry_date = df.index[i]
+            entry_price = df['Close'].iloc[i]
             
-            for e_len in range(ema_min, ema_max + 1):
-                rsi_ema = ta.ema(rsi_series, length=e_len)
-                
-                # Signal: 1 if RSI > EMA else 0
-                signal = (rsi_series > rsi_ema).astype(int)
-                strat_ret = (df['Market_Ret'] * signal.shift(1)).fillna(0)
-                
-                # Cumulative Returns
-                cum_ret = (1 + strat_ret).cumprod()
-                total_return = cum_ret.iloc[-1] - 1
-                
-                # Max Drawdown Calculation
-                # 
-                running_max = cum_ret.cummax()
-                drawdown = (cum_ret - running_max) / running_max
-                max_dd = drawdown.min()
-                
-                results.append({
-                    'RSI_Len': r_len,
-                    'EMA_Len': e_len,
-                    'ROI_%': total_return * 100,
-                    'Max_DD_%': max_dd * 100
-                })
+        # Exit Logic (Crossover Down)
+        elif df['Position_Change'].iloc[i] == -1 and in_trade:
+            in_trade = False
+            exit_date = df.index[i]
+            exit_price = df['Close'].iloc[i]
+            pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+            
+            trades.append({
+                "Entry Date": entry_date.date(),
+                "Exit Date": exit_date.date(),
+                "Entry Price": round(entry_price, 2),
+                "Exit Price": round(exit_price, 2),
+                "P&L %": round(pnl_pct, 2)
+            })
+
+    # 4. Display the Trade Book
+    if trades:
+        trade_df = pd.DataFrame(trades)
+        st.write(f"### Trade Ledger for RSI({best_rsi}) vs EMA({best_ema})")
+        st.dataframe(trade_df)
         
-        progress_bar.progress(1.0)
-        
-        # 4. Display Results
-        res_df = pd.DataFrame(results)
-        # We name the index column to make it clear
-        res_df.index.name = "Rank_ID"
-        
-        best = res_df.loc[res_df['ROI_%'].idxmax()]
-        
-        st.success(f"Best ROI: {best['ROI_%']:.2f}% | Associated Max Drawdown: {best['Max_DD_%']:.2f}%")
-        
-        # Sort by ROI and show
-        st.write("### Top Parameters (Sorted by ROI)")
-        st.dataframe(res_df.sort_values('ROI_%', ascending=False).head(20))
+        # Summary Stats
+        win_rate = (trade_df['P&L %'] > 0).mean() * 100
+        st.metric("Total Trades", len(trade_df))
+        st.metric("Win Rate", f"{win_rate:.2f}%")
+    else:
+        st.warning("No trades were triggered with these parameters in this date range.")
