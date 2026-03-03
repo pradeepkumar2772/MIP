@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v5.0", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v5.1", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Consistency & Profit-Factor Suite")
+st.title("🛡️ Pro-Tracer: Risk-Reward & Profitability Engine")
 st.sidebar.header("Global Settings")
 
 ticker = st.sidebar.text_input("Ticker Symbol", "TRENT.NS")
@@ -28,14 +28,12 @@ def get_data(symbol, start, end):
 df_raw = get_data(ticker, start_date, end_date)
 
 if df_raw.empty:
-    st.warning("Awaiting data... Please check the ticker symbol.")
+    st.warning("Awaiting data...")
 else:
     # --- MODULE 1: GLOBAL 3D OPTIMIZER ---
     if mode == "Global 3D Optimizer":
-        st.header("🔬 Narrow-Band Strategy Optimizer")
-        st.info("Scanning RSI Lengths (3-252) | Entry (50-60) | Exit (40-60)")
-
-        if st.button("🚀 Start Precision Scan"):
+        st.header("🔬 Strategic Risk-Reward Optimizer")
+        if st.button("🚀 Run Deep Analysis"):
             all_results = []
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
@@ -55,18 +53,14 @@ else:
                 for ent in ent_range:
                     for ext in ext_range:
                         if ext >= ent: continue 
-                        
                         count += 1
                         progress_bar.progress(count / total_combos)
 
-                        # Logic Simulation
-                        in_pos = False
-                        trade_results = []
+                        in_pos, trade_results = False, []
                         entry_p = 0
                         
                         for j in range(1, len(df)):
-                            val = rsi.iloc[j]
-                            curr_c = float(df['Close'].iloc[j])
+                            val, curr_c = rsi.iloc[j], float(df['Close'].iloc[j])
                             if not in_pos and val > ent:
                                 in_pos, entry_p = True, curr_c
                             elif in_pos and val < ext:
@@ -75,38 +69,36 @@ else:
 
                         if trade_results:
                             roi = (np.prod([1 + r for r in trade_results]) - 1) * 100
-                            # Win Rate Calculation
                             wins = [r for r in trade_results if r > 0]
                             losses = [r for r in trade_results if r <= 0]
-                            win_rate = (len(wins) / len(trade_results)) * 100
                             
-                            # Profit Factor Calculation
-                            gross_profit = sum(wins)
-                            gross_loss = abs(sum(losses))
-                            profit_factor = gross_profit / gross_loss if gross_loss != 0 else np.inf
+                            win_rate = (len(wins) / len(trade_results)) * 100
+                            avg_win = np.mean(wins) if wins else 0
+                            avg_loss = abs(np.mean(losses)) if losses else 0
+                            rrr = avg_win / avg_loss if avg_loss != 0 else np.inf
                             
                             all_results.append({
                                 'RSI_Len': r_len, 'Entry': ent, 'Exit': ext, 
                                 'ROI %': round(roi, 2), 
                                 'Win Rate %': round(win_rate, 1),
-                                'Profit Factor': round(profit_factor, 2),
+                                'Avg RRR': round(rrr, 2),
                                 'Trades': len(trade_results)
                             })
 
             res_df = pd.DataFrame(all_results).sort_values('ROI %', ascending=False)
-            st.success("Scan Complete!")
+            st.success("Analysis Complete!")
             st.dataframe(res_df, use_container_width=True)
 
     # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
-        st.header("📜 Performance Audit & Ledger")
+        st.header("📜 Performance Audit")
         c1, c2, c3, c4 = st.columns(4)
         in_rsi = c1.number_input("RSI Length", value=14, min_value=3)
-        in_ent = c2.slider("Entry Threshold", 50, 60, 55)
-        in_ext = c3.slider("Exit Threshold", 40, 60, 45)
-        vol_mult = c4.number_input("Vol Spike (x)", value=1.5, step=0.1)
+        in_ent = c2.slider("Entry Level", 50, 60, 55)
+        in_ext = c3.slider("Exit Level", 40, 60, 45)
+        vol_mult = c4.number_input("Vol Spike (x)", value=1.5)
         
-        if st.button("📊 Generate Detailed Report"):
+        if st.button("📊 Generate Report"):
             df = df_raw.copy()
             df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
             df['Vol_MA'] = df['Volume'].rolling(window=20).mean()
@@ -126,40 +118,27 @@ else:
                 elif in_trade:
                     if rsi_v < in_ext and prev_rsi >= in_ext:
                         in_trade = False
-                        exit_p = curr_p
-                        pnl = ((exit_p - entry_price) / entry_price) * 100
-                        trades.append({
-                            "Entry Date": entry_date.date(), "Exit Date": df.index[i].date(), 
-                            "Entry Price": round(entry_price, 2), "Exit Price": round(exit_p, 2), 
-                            "P&L %": round(pnl, 2)
-                        })
+                        pnl = ((curr_p - entry_price) / entry_price) * 100
+                        trades.append({"Entry": entry_date.date(), "Exit": df.index[i].date(), "Entry P": round(entry_price, 2), "Exit P": round(curr_p, 2), "P&L %": round(pnl, 2)})
 
             if trades:
                 t_df = pd.DataFrame(trades)
-                
-                # Metrics Calculation
                 wins = t_df[t_df['P&L %'] > 0]['P&L %']
                 losses = t_df[t_df['P&L %'] <= 0]['P&L %']
-                win_rate = (len(wins) / len(t_df)) * 100
-                profit_factor = wins.sum() / abs(losses.sum()) if not losses.empty else np.inf
+                
+                avg_win, avg_loss = wins.mean(), abs(losses.mean())
+                rrr = avg_win / avg_loss if avg_loss != 0 else np.inf
                 
                 daily_rets = pd.Series(0.0, index=df.index)
-                for _, row in t_df.iterrows():
-                    daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
+                for _, row in t_df.iterrows(): daily_rets.loc[pd.to_datetime(row['Exit'])] = row['P&L %'] / 100
                 cum_strategy = (1 + daily_rets).cumprod()
-                max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
-                total_ret_val = (cum_strategy.iloc[-1] - 1) * 100
                 
                 st.subheader("📊 Quant Scorecard")
-                s1, s2, s3, s4, s5 = st.columns(5)
-                s1.metric("Total ROI", f"{total_ret_val:.1f}%")
-                s2.metric("Win Rate", f"{win_rate:.1f}%")
-                s3.metric("Profit Factor", f"{profit_factor:.2f}")
-                s4.metric("Max Drawdown", f"{max_dd_val*100:.2f}%")
-                s5.metric("Recovery Factor", f"{abs(total_ret_val/(max_dd_val*100)):.2f}")
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("Total ROI", f"{(cum_strategy.iloc[-1]-1)*100:.1f}%")
+                s2.metric("Win Rate", f"{(len(wins)/len(t_df))*100:.1f}%")
+                s3.metric("Avg RRR", f"{rrr:.2f}:1")
+                s4.metric("Trades", len(t_df))
                 
                 st.line_chart(100000 * cum_strategy)
-                st.write("### 📋 Trade Ledger")
                 st.dataframe(t_df, use_container_width=True)
-            else:
-                st.warning("No trades found. Check if the stock is above its 200 EMA.")
