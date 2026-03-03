@@ -5,11 +5,12 @@ import streamlit as st
 import datetime
 import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v4.3", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v4.5", layout="wide")
 
-st.title("🛡️ Pro-Tracer: 3D High-Precision Global Suite")
+st.title("🛡️ Pro-Tracer: RSI Power-Level Suite (40/50/60)")
 st.sidebar.header("Scan Parameters")
 
 ticker = st.sidebar.text_input("Ticker Symbol", "TRENT.NS")
@@ -32,42 +33,35 @@ if df_raw.empty:
 else:
     # --- MODULE 1: GLOBAL 3D OPTIMIZER ---
     if mode == "Global 3D Optimizer":
-        st.header("🔬 High-Precision 3D Scan")
-        st.info("Scanning 125 Lengths (Step 2) across 36 Entry/Exit Matrix combinations.")
+        st.header("🔬 High-Precision 3D Scan (40/50/60 Matrix)")
+        st.info("Scanning 125 Lengths (Step 2) against Entry/Exit combos of 40, 50, and 60.")
 
-        if st.button("🚀 Start High-Precision Global Scan"):
+        if st.button("🚀 Start Power-Level Scan"):
             all_results = []
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
             
-            # --- HIGH PRECISION 3D SPACE ---
-            len_range = range(3, 253, 2)  # Step 2 as requested
-            ent_range = range(55, 81, 5)   # Entry levels
-            ext_range = range(35, 61, 5)   # Exit levels
+            # --- PARAMETER SPACE ---
+            len_range = range(3, 253, 2) 
+            # Limited strictly to 40, 50, 60
+            power_levels = [40, 50, 60] 
             
-            total_combos = len(len_range) * len(ent_range) * len(ext_range)
             progress_bar = st.progress(0)
             status = st.empty()
-            count = 0
-
-            # Pre-calculate Trend Filter to save time in loop
+            
+            # Optimization: Pre-calculate Trend Filter
             df['Trend_OK'] = df['Close'] > ta.ema(df['Close'], length=200)
 
-            for r_len in len_range:
-                # Pre-calculate RSI for this length
+            total_len = len(len_range)
+            for idx, r_len in enumerate(len_range):
                 rsi = ta.rsi(df['Close'], length=r_len)
                 if rsi is None: continue
                 
-                for ent in ent_range:
-                    for ext in ext_range:
-                        if ext >= ent: continue 
+                for ent in power_levels:
+                    for ext in power_levels:
+                        if ext >= ent: continue # Logic: Exit must be lower than Entry
                         
-                        count += 1
-                        if count % 50 == 0: # UI Refresh every 50 combos
-                            progress_bar.progress(count / total_combos)
-                            status.text(f"Scanning Precision Node {count}/{total_combos} | Current RSI Len: {r_len}")
-
-                        # Simulation
+                        # Simulation logic
                         sig = pd.Series(0, index=df.index)
                         in_pos = False
                         for j in range(1, len(df)):
@@ -85,28 +79,35 @@ else:
                             'ROI %': round(roi, 2), 'Max_DD %': round(max_dd, 2),
                             'Recov_Factor': round(abs(roi/max_dd), 2) if max_dd != 0 else 0
                         })
+                progress_bar.progress((idx + 1) / total_len)
 
-            res_df = pd.DataFrame(all_results).sort_values('ROI %', ascending=False)
-            st.success("High-Precision Scan Complete!")
+            res_df = pd.DataFrame(all_results)
             
-            # Show the "Golden Peak"
-            st.subheader("🏆 The Global Top 10 High-Precision Strategies")
-            st.dataframe(res_df.head(10), use_container_width=True)
+            # --- HEATMAP: RECOVERY FACTOR (RISK-ADJUSTED) ---
+            st.write("### 🌡️ Risk-Adjusted Heatmap (Recovery Factor)")
+            st.caption("This shows which RSI lengths offer the smoothest ride (Net Profit vs Max Drawdown).")
+            
+            # Grouping by Length to see structural stability
+            heat_data = res_df.groupby('RSI_Len')['Recov_Factor'].mean().reset_index()
+            fig, ax = plt.subplots(figsize=(15, 2.5))
+            sns.heatmap(heat_data.set_index('RSI_Len').T, cmap="YlGn", cbar_kws={'label': 'Avg Recov Factor'}, ax=ax)
+            ax.set_title("Strategy Stability Map (3-252)")
+            st.pyplot(fig)
 
-            # Export
-            csv_data = res_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Full 3D Precision Results", data=csv_data, file_name=f"{ticker}_precision_3D.csv")
+            # --- TOP RESULTS ---
+            st.subheader("🏆 Top Ranked Strategies (40/50/60 Matrix)")
+            st.dataframe(res_df.sort_values('ROI %', ascending=False).head(15), use_container_width=True)
 
     # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
-        st.header("📜 High-Precision Trade Ledger")
+        st.header("📜 Performance Audit")
         c1, c2, c3, c4 = st.columns(4)
         in_rsi = c1.number_input("RSI Length", value=14)
-        in_ent = c2.number_input("Entry RSI", value=60)
-        in_ext = c3.number_input("Exit RSI", value=50)
+        in_ent = c2.selectbox("Entry RSI", [40, 50, 60], index=2)
+        in_ext = c3.selectbox("Exit RSI", [40, 50, 60], index=1)
         vol_mult = c4.number_input("Vol Spike (x)", value=1.5)
         
-        if st.button("📊 Generate Detailed Report"):
+        if st.button("📊 Run Detailed Audit"):
             df = df_raw.copy()
             df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
             df['Vol_MA'] = df['Volume'].rolling(window=20).mean()
@@ -128,11 +129,7 @@ else:
                         in_trade = False
                         exit_p = curr_p
                         pnl = ((exit_p - entry_price) / entry_price) * 100
-                        trades.append({
-                            "Entry Date": entry_date.date(), "Exit Date": df.index[i].date(), 
-                            "Entry Price": round(entry_price, 2), "Exit Price": round(exit_p, 2), 
-                            "P&L %": round(pnl, 2)
-                        })
+                        trades.append({"Entry Date": entry_date.date(), "Exit Date": df.index[i].date(), "Entry Price": round(entry_price, 2), "Exit Price": round(exit_p, 2), "P&L %": round(pnl, 2)})
 
             if trades:
                 t_df = pd.DataFrame(trades)
@@ -140,6 +137,12 @@ else:
                 for _, row in t_df.iterrows(): daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
                 cum_strategy = (1 + daily_rets).cumprod()
                 
-                st.subheader("📊 Quant Scorecard")
+                max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
+                
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Total ROI", f"{(cum_strategy.iloc[-1]-1)*100:.2f}%")
+                s2.metric("Max Drawdown", f"{max_dd_val*100:.2f}%")
+                s3.metric("Num Trades", len(t_df))
+                
                 st.line_chart(100000 * cum_strategy)
                 st.dataframe(t_df, use_container_width=True)
