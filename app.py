@@ -4,7 +4,6 @@ import pandas_ta as ta
 import streamlit as st
 import datetime
 import numpy as np
-import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Pro-Tracer v2.0", layout="wide")
@@ -25,7 +24,9 @@ def get_data(symbol, start, end):
     try:
         data = yf.download(symbol, start=start, end=end)
         if not data.empty:
-            data.columns = data.columns.get_level_values(0)
+            # Handle potential MultiIndex columns from newer yfinance versions
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
             return data
     except Exception as e:
         st.error(f"Data error: {e}")
@@ -44,7 +45,7 @@ else:
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
             
-            # Step 5 for speed; change to 1 for high precision
+            # Step 5 for speed; change to 1 for high precision (but slower)
             rsi_range = range(3, 253, 5) 
             ema_range = range(3, 51, 5)
             
@@ -94,8 +95,13 @@ else:
                 elif df['Change'].iloc[i] == -1 and in_trade:
                     in_trade, exit_date, exit_price = False, df.index[i], df['Close'].iloc[i]
                     pnl = ((exit_price - entry_price) / entry_price) * 100
-                    trades.append({"Entry Date": entry_date.date(), "Exit Date": exit_date.date(), 
-                                   "Entry Price": float(entry_price), "Exit Price": float(exit_price), "P&L %": float(pnl)})
+                    trades.append({
+                        "Entry Date": entry_date.date(), 
+                        "Exit Date": exit_date.date(), 
+                        "Entry Price": float(entry_price), 
+                        "Exit Price": float(exit_price), 
+                        "P&L %": float(pnl)
+                    })
 
             if trades:
                 t_df = pd.DataFrame(trades)
@@ -104,23 +110,27 @@ else:
                 daily_ret = (df['Close'].pct_change() * df['Signal'].shift(1)).fillna(0)
                 cum_strategy = (1 + daily_ret).cumprod()
                 
-                total_ret = (cum_strategy.iloc[-1] - 1)
-                num_years = (df.index[-1] - df.index[0]).days / 365.25
-                cagr = ((1 + total_ret)**(1/num_years) - 1) if total_ret > -1 else -1
-                max_dd = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
+                total_ret_val = cum_strategy.iloc[-1] - 1
+                num_years = max((df.index[-1] - df.index[0]).days / 365.25, 0.1)
+                cagr = ((1 + total_ret_val)**(1/num_years) - 1) if total_ret_val > -1 else -1
+                max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
                 
+                # Win/Loss Calculations
                 win_rate = (t_df['P&L %'] > 0).mean()
-                avg_win = t_df[t_df['P&L %'] > 0]['P&L %'].mean()
-                avg_loss = abs(t_df[t_df['P&L %'] < 0]['P&L %'].mean())
+                avg_win = t_df[t_df['P&L %'] > 0]['P&L %'].mean() if not t_df[t_df['P&L %'] > 0].empty else 0
+                avg_loss = abs(t_df[t_df['P&L %'] < 0]['P&L %'].mean()) if not t_df[t_df['P&L %'] < 0].empty else 0
                 expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
-                profit_factor = (t_df[t_df['P&L %'] > 0]['P&L %'].sum()) / abs(t_df[t_df['P&L %'] < 0]['P&L %'].sum()) if losses != 0 else np.inf
+                
+                sum_gains = t_df[t_df['P&L %'] > 0]['P&L %'].sum()
+                sum_losses = abs(t_df[t_df['P&L %'] < 0]['P&L %'].sum())
+                profit_factor = sum_gains / sum_losses if sum_losses != 0 else np.inf
 
                 # --- 1. Quant Scorecard ---
                 st.subheader("📊 Pro-Tracer Quant Scorecard")
                 s1, s2, s3, s4 = st.columns(4)
-                s1.metric("Total Return", f"{total_ret*100:.2f}%")
+                s1.metric("Total Return", f"{total_ret_val*100:.2f}%")
                 s2.metric("CAGR", f"{cagr*100:.2f}%")
-                s3.metric("Max Drawdown", f"{max_dd*100:.2f}%")
+                s3.metric("Max Drawdown", f"{max_dd_val*100:.2f}%")
                 s4.metric("Expectancy", f"{expectancy:.2f}%")
                 
                 s5, s6, s7, s8 = st.columns(4)
@@ -132,7 +142,7 @@ else:
                 # --- 2. Compounding Calculator ---
                 st.subheader("💰 The Power of Compounding")
                 initial_capital = 100000
-                final_value = initial_capital * (1 + total_ret)
+                final_value = initial_capital * (1 + total_ret_val)
                 st.write(f"If you started with **₹1,00,000**, it would now be worth: **₹{final_value:,.2f}**")
                 
                 comp_curve = initial_capital * cum_strategy
