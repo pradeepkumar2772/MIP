@@ -1,107 +1,133 @@
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import matplotlib.pyplot as plt
 
-# -----------------------------
-# 1. Download Data
-# -----------------------------
-symbol = "AAPL"  # Change to your stock
-start_date = "2015-01-01"
+# ===============================
+# CONFIGURATION
+# ===============================
+symbol = "AAPL"
+start_date = "2010-01-01"
 end_date = "2024-01-01"
+transaction_cost = 0.0005   # 0.05%
+slippage = 0.0005           # 0.05%
 
+# ===============================
+# DATA DOWNLOAD
+# ===============================
 df = yf.download(symbol, start=start_date, end=end_date)
-df = df[['Close']].copy()
+df = df[['Close']].dropna()
 
-# -----------------------------
-# 2. RSI Function
-# -----------------------------
-def calculate_rsi(data, period):
-    delta = data.diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
+# ===============================
+# RSI FUNCTION (Institutional Safe)
+# ===============================
+def compute_rsi(price, period):
+    delta = price.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    gain = pd.Series(gain).rolling(period).mean()
-    loss = pd.Series(loss).rolling(period).mean()
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
 
-    rs = gain / loss
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-# -----------------------------
-# 3. Backtest Function
-# -----------------------------
-def backtest_rsi_strategy(df, rsi_period):
-    
-    data = df.copy()
-    
-    # Calculate RSI
-    data['RSI'] = calculate_rsi(data['Close'], rsi_period)
-    
-    # RSI Moving Averages
-    data['RSI_MA_9'] = data['RSI'].rolling(9).mean()
-    data['RSI_MA_21'] = data['RSI'].rolling(21).mean()
-    
-    # Entry Condition
-    entry = (
-        (data['RSI'] > data['RSI_MA_9']) &
-        (data['RSI'].shift(1) <= data['RSI_MA_9'].shift(1)) &
-        (data['RSI_MA_9'] > data['RSI_MA_21'])
-    )
-    
-    # Exit Condition
-    exit = (
-        (data['RSI'] < data['RSI_MA_9']) &
-        (data['RSI'].shift(1) >= data['RSI_MA_9'].shift(1)) &
-        (data['RSI_MA_9'] < data['RSI_MA_21'])
-    )
-    
-    data['Position'] = 0
-    data.loc[entry, 'Position'] = 1
-    data.loc[exit, 'Position'] = 0
-    
-    data['Position'] = data['Position'].replace(to_replace=0, method='ffill')
-    data['Position'] = data['Position'].fillna(0)
-    
-    # Returns
-    data['Market_Return'] = data['Close'].pct_change()
-    data['Strategy_Return'] = data['Market_Return'] * data['Position'].shift(1)
-    
-    # Performance
-    cumulative_return = (1 + data['Strategy_Return']).cumprod().iloc[-1]
-    sharpe = (data['Strategy_Return'].mean() / data['Strategy_Return'].std()) * np.sqrt(252)
-    
-    return cumulative_return, sharpe, data
+# ===============================
+# PERFORMANCE METRICS
+# ===============================
+def performance_metrics(returns):
+    returns = returns.dropna()
+    equity = (1 + returns).cumprod()
 
-# -----------------------------
-# 4. Optimize RSI Period 3–252
-# -----------------------------
+    total_return = equity.iloc[-1] - 1
+    years = len(returns) / 252
+    cagr = (equity.iloc[-1]) ** (1 / years) - 1
+
+    drawdown = equity / equity.cummax() - 1
+    max_dd = drawdown.min()
+
+    sharpe = np.sqrt(252) * returns.mean() / returns.std()
+    sortino = np.sqrt(252) * returns.mean() / returns[returns < 0].std()
+
+    return {
+        "Total Return": total_return,
+        "CAGR": cagr,
+        "Max Drawdown": max_dd,
+        "Sharpe": sharpe,
+        "Sortino": sortino
+    }
+
+# ===============================
+# BACKTEST FUNCTION
+# ===============================
+def backtest(data, rsi_period):
+
+    df = data.copy()
+
+    df['RSI'] = compute_rsi(df['Close'], rsi_period)
+    df['RSI_MA_9'] = df['RSI'].rolling(9).mean()
+
+    # Entry
+    entry = (
+        (df['RSI'] > df['RSI_MA_9']) &
+        (df['RSI'].shift(1) <= df['RSI_MA_9'].shift(1))
+    )
+
+    # Exit
+    exit = (
+        (df['RSI'] < df['RSI_MA_9']) &
+        (df['RSI'].shift(1) >= df['RSI_MA_9'].shift(1))
+    )
+
+    df['signal'] = 0
+    df.loc[entry, 'signal'] = 1
+    df.loc[exit, 'signal'] = 0
+
+    df['position'] = df['signal'].replace(to_replace=0, method='ffill')
+    df['position'] = df['position'].fillna(0)
+
+    df['returns'] = df['Close'].pct_change()
+
+    # Apply slippage & cost on trade days
+    trades = df['position'].diff().abs()
+    cost = trades * (transaction_cost + slippage)
+
+    df['strategy_returns'] = (
+        df['position'].shift(1) * df['returns']
+        - cost
+    )
+
+    metrics = performance_metrics(df['strategy_returns'])
+
+    return metrics
+
+# ===============================
+# TRAIN / TEST SPLIT
+# ===============================
+split = int(len(df) * 0.7)
+train = df.iloc[:split]
+test = df.iloc[split:]
+
 results = []
 
 for period in range(3, 253):
-    try:
-        cum_ret, sharpe, _ = backtest_rsi_strategy(df, period)
-        results.append([period, cum_ret, sharpe])
-    except:
-        continue
+    train_metrics = backtest(train, period)
+    test_metrics = backtest(test, period)
 
-results_df = pd.DataFrame(results, columns=['RSI_Period', 'Cumulative_Return', 'Sharpe'])
+    results.append([
+        period,
+        train_metrics["Sharpe"],
+        test_metrics["Sharpe"],
+        test_metrics["CAGR"],
+        test_metrics["Max Drawdown"]
+    ])
 
-# Sort by Sharpe Ratio
-results_df = results_df.sort_values(by='Sharpe', ascending=False)
+results_df = pd.DataFrame(
+    results,
+    columns=["RSI_Period", "Train Sharpe", "Test Sharpe", "Test CAGR", "Test MaxDD"]
+)
 
-print("\nTop 10 RSI Periods by Sharpe Ratio:\n")
+results_df = results_df.sort_values("Test Sharpe", ascending=False)
+
+print("\nTop 10 Stable RSI Periods (Out-of-Sample):\n")
 print(results_df.head(10))
-
-# -----------------------------
-# 5. Plot Best Strategy
-# -----------------------------
-best_period = results_df.iloc[0]['RSI_Period']
-_, _, best_data = backtest_rsi_strategy(df, int(best_period))
-
-plt.figure(figsize=(12,6))
-plt.plot((1 + best_data['Strategy_Return']).cumprod(), label="Strategy")
-plt.plot((1 + best_data['Market_Return']).cumprod(), label="Buy & Hold")
-plt.legend()
-plt.title(f"Best RSI Period: {best_period}")
-plt.show()
