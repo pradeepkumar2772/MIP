@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v3.6", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v3.7", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Full-Spectrum Optimizer")
+st.title("🛡️ Pro-Tracer: High-Precision Optimizer")
 st.sidebar.header("Global Settings")
 
 ticker = st.sidebar.text_input("Ticker Symbol", "TRENT.NS")
@@ -36,15 +36,16 @@ if df_raw.empty:
     st.warning("Awaiting data...")
 else:
     if mode == "Visual Optimizer":
-        st.header("📈 Full RSI Sensitivity Analysis (3 to 252)")
+        st.header("📈 High-Precision RSI Sensitivity (Step 2)")
+        st.info("Scanning 125 combinations (RSI 3 to 252) to find the absolute peak.")
         
-        if st.button("🚀 Run Full Spectrum Scan"):
+        if st.button("🚀 Run High-Precision Scan"):
             results = []
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
             
-            # Range 3-252, Step 5 (Total 50 test cases)
-            rsi_range = range(3, 253, 5) 
+            # --- UPDATED RANGE: Step 2 for High Precision ---
+            rsi_range = range(3, 253, 2) 
             progress_bar = st.progress(0)
             
             for i, r_len in enumerate(rsi_range):
@@ -73,29 +74,27 @@ else:
             
             res_df = pd.DataFrame(results)
             
-            # 1. Visualization
-            fig, ax = plt.subplots(figsize=(12, 5))
-            ax.plot(res_df['RSI_Len'], res_df['ROI %'], marker='o', color='#2ca02c', label='ROI %')
-            ax.set_xlabel("RSI Look-back Period")
+            # 1. High-Density Visualization
+            fig, ax = plt.subplots(figsize=(14, 6))
+            ax.plot(res_df['RSI_Len'], res_df['ROI %'], color='#007acc', linewidth=1.5, alpha=0.8)
+            ax.fill_between(res_df['RSI_Len'], res_df['ROI %'], color='#007acc', alpha=0.1)
+            ax.set_xlabel("RSI Look-back Period (Precision Step 2)")
             ax.set_ylabel("Total ROI %")
-            ax.set_title(f"Full Strategy Sensitivity: {ticker}")
-            ax.grid(True, alpha=0.2)
+            ax.set_title(f"High-Precision Momentum Sensitivity: {ticker}")
+            ax.grid(True, linestyle='--', alpha=0.5)
             st.pyplot(fig)
             
-            # 2. Complete Ranked List (No .head() restriction)
+            # 2. Complete Ranked List
             st.write("### 🏆 Full Ranked Strategy List")
-            st.info("Showing all 50+ combinations tested. Sort by clicking column headers.")
-            
-            # Highlight high Recovery Factors
             full_list = res_df.sort_values('ROI %', ascending=False).reset_index(drop=True)
             st.dataframe(full_list, use_container_width=True)
             
-            # 3. Data Export
+            # 3. Export
             csv_opt = full_list.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download All Optimizer Results", data=csv_opt, file_name=f"{ticker}_full_optimization.csv", mime="text/csv")
+            st.download_button("📥 Download Precision Results (CSV)", data=csv_opt, file_name=f"{ticker}_precision_opt.csv", mime="text/csv")
 
     elif mode == "Trade Detailer":
-        # Trade Detailer logic remains stable with v3.3 features (Prices, Vol Spike, Scorecard)
+        # Trade Detailer remains stable with v3.3 features
         st.header("📜 Trade Detailer & Recovery Analysis")
         col1, col2, col3, col4 = st.columns(4)
         in_rsi = col1.number_input("RSI Look-back", value=14)
@@ -135,7 +134,6 @@ else:
 
             if trades:
                 t_df = pd.DataFrame(trades)
-                # Performance Visuals
                 daily_rets = pd.Series(0.0, index=df.index)
                 for _, row in t_df.iterrows(): daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
                 cum_strategy = (1 + daily_rets).cumprod()
