@@ -5,19 +5,16 @@ import streamlit as st
 import datetime
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v4.0", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v4.1", layout="wide")
 
-st.title("🛡️ Pro-Tracer: 3D Matrix Optimizer")
-st.sidebar.header("Global Settings")
+st.title("🛡️ Pro-Tracer: Total Strategy Optimizer (3D)")
+st.sidebar.header("Scan Parameters")
 
 ticker = st.sidebar.text_input("Ticker Symbol", "TRENT.NS")
 start_date = st.sidebar.date_input("Start Date", datetime.date(1999, 1, 1))
 end_date = st.sidebar.date_input("End Date", datetime.date.today())
-
-mode = st.sidebar.radio("Select Module", ["Matrix Optimizer", "Trade Detailer"])
 
 @st.cache_data
 def get_data(symbol, start, end):
@@ -31,35 +28,35 @@ df_raw = get_data(ticker, start_date, end_date)
 if df_raw.empty:
     st.warning("Awaiting data...")
 else:
-    if mode == "Matrix Optimizer":
-        st.header("🧪 RSI Entry/Exit Matrix Scan")
-        st.info("Finding the best combination of RSI Length, Entry Level, and Exit Level.")
+    st.header("🔬 3-Way Global Optimization")
+    st.info("Searching Lengths (3-252), Entries (55-80), and Exits (35-60) simultaneously.")
+
+    if st.button("🚀 Start Global Deep-Scan"):
+        all_results = []
+        df = df_raw.copy()
+        df['Market_Ret'] = df['Close'].pct_change()
         
-        # Matrix Controls
-        c1, c2 = st.columns(2)
-        opt_rsi_len = c1.slider("Fixed RSI Length for Matrix", 3, 252, 14)
+        # --- 3D Optimization Space ---
+        # We use slightly larger steps for the Global Scan to maintain speed
+        len_range = range(3, 253, 15)  # 17 lengths
+        ent_range = range(55, 81, 5)   # 6 entries
+        ext_range = range(35, 61, 5)   # 6 exits
         
-        if st.button("🚀 Run Matrix Scan"):
-            matrix_results = []
-            df = df_raw.copy()
-            df['Market_Ret'] = df['Close'].pct_change()
-            rsi = ta.rsi(df['Close'], length=opt_rsi_len)
-            
-            # Threshold Ranges
-            entry_range = range(55, 81, 5) # 55, 60, 65, 70, 75, 80
-            exit_range = range(35, 61, 5)  # 35, 40, 45, 50, 55, 60
-            
-            progress_bar = st.progress(0)
-            total_steps = len(entry_range) * len(exit_range)
-            step = 0
-            
-            for ent in entry_range:
-                for ext in exit_range:
-                    if ext >= ent: continue # Exit cannot be higher than entry
+        total_combos = len(len_range) * len(ent_range) * len(ext_range)
+        progress_bar = st.progress(0)
+        status = st.empty()
+        count = 0
+
+        for r_len in len_range:
+            rsi = ta.rsi(df['Close'], length=r_len)
+            for ent in ent_range:
+                for ext in ext_range:
+                    if ext >= ent: continue # Logical check
                     
-                    step += 1
-                    progress_bar.progress(step / total_steps)
-                    
+                    count += 1
+                    progress_bar.progress(count / total_combos)
+                    status.text(f"Testing: Len {r_len} | Entry {ent} | Exit {ext}")
+
                     # Simulation
                     sig = pd.Series(0, index=df.index)
                     in_pos = False
@@ -70,22 +67,26 @@ else:
                     
                     strat_ret = (df['Market_Ret'] * sig.shift(1)).fillna(0)
                     cum_ret = (1 + strat_ret).cumprod()
-                    total_roi = (cum_ret.iloc[-1] - 1) * 100
+                    roi = (cum_ret.iloc[-1] - 1) * 100
+                    max_dd = ((cum_ret - cum_ret.cummax()) / cum_ret.cummax()).min() * 100
                     
-                    matrix_results.append({'Entry': ent, 'Exit': ext, 'ROI': total_roi})
-            
-            res_df = pd.DataFrame(matrix_results)
-            pivot_df = res_df.pivot(index="Entry", columns="Exit", values="ROI")
-            
-            # --- Heatmap Visualization ---
-            st.write("### 🌡️ ROI Heatmap (Entry vs Exit)")
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.heatmap(pivot_df, annot=True, fmt=".0f", cmap="RdYlGn", ax=ax)
-            st.pyplot(fig)
-            
-            st.write("### 🏆 Top Matrix Combinations")
-            st.dataframe(res_df.sort_values('ROI', ascending=False))
+                    all_results.append({
+                        'RSI_Len': r_len, 'Entry': ent, 'Exit': ext, 
+                        'ROI %': round(roi, 2), 'Max_DD %': round(max_dd, 2),
+                        'Recov_Factor': round(abs(roi/max_dd), 2) if max_dd != 0 else 0
+                    })
 
-    elif mode == "Trade Detailer":
-        # Standard v3.3 Detailer logic here...
-        st.info("Use the parameters from the Matrix Optimizer here to see full trade logs.")
+        res_df = pd.DataFrame(all_results).sort_values('ROI %', ascending=False)
+        st.success("Global Deep-Scan Complete!")
+        
+        # Display the "Holy Grail" top 5
+        st.subheader("🏆 The Global Top 5 Strategies")
+        st.table(res_df.head(5))
+
+        # Show the rest in a filterable table
+        st.write("### 📋 Full Strategy Database")
+        st.dataframe(res_df, use_container_width=True)
+
+        # Download button for the full scan results
+        csv_data = res_df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download All 3D Results", data=csv_data, file_name=f"{ticker}_global_opt.csv")
