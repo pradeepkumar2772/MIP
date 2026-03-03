@@ -1,119 +1,107 @@
-import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-from datetime import datetime, timedelta
+import matplotlib.pyplot as plt
 
-# --- 1. CORE LOGIC ENGINE ---
-class MomentumEngine:
-    def __init__(self, tickers):
-        self.tickers = [t.strip() for t in tickers if t.strip()]
-        self.benchmark = '^NSEI'
+# -----------------------------
+# 1. Download Data
+# -----------------------------
+symbol = "AAPL"  # Change to your stock
+start_date = "2015-01-01"
+end_date = "2024-01-01"
 
-    def fetch_data(self):
-        # Explicitly fetching benchmark and stocks separately for stability
-        all_symbols = list(set(self.tickers + [self.benchmark]))
-        start = datetime.today() - timedelta(days=500)
-        try:
-            data = yf.download(all_symbols, start=start, progress=False, threads=False)
-            if data.empty: return None
-            return data
-        except:
-            return None
+df = yf.download(symbol, start=start_date, end=end_date)
+df = df[['Close']].copy()
 
-    def calculate_scan(self, data, period, ret_limit, use_ret):
-        adj_close = data['Adj Close']
-        highs = data['High']
-        lows = data['Low']
-        
-        # Current Metrics
-        lcp = adj_close.iloc[-1]
-        returns = adj_close.pct_change(period).iloc[-1] * 100
-        
-        # Volar Calculation (Ch. 5: Return / Avg Daily Range)
-        daily_range = (highs - lows) / adj_close
-        avg_vol = daily_range.rolling(period).mean().iloc[-1]
-        volar = (returns / 100) / avg_vol
-        
-        # Retracement (52W High)
-        h52w = highs.tail(252).max()
-        retracement = ((h52w - lcp) / h52w) * 100
-        
-        # Filters
-        ema_200 = adj_close.ewm(span=200).mean().iloc[-1]
-        
-        df_res = pd.DataFrame({
-            "Scrip": lcp.index,
-            "LCP": lcp.values,
-            "Return %": returns.values,
-            "Volar": volar.values,
-            "Retracement %": retracement.values,
-            "EMA_200": ema_200.values
-        })
-        
-        # Remove benchmark from results
-        df_res = df_res[df_res['Scrip'] != self.benchmark]
-        
-        # Filter Logic from UI
-        if use_ret:
-            df_res = df_res[df_res['Retracement %'] <= ret_limit]
-            
-        return df_res.sort_values("Volar", ascending=False)
+# -----------------------------
+# 2. RSI Function
+# -----------------------------
+def calculate_rsi(data, period):
+    delta = data.diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
 
-# --- 2. STREAMLIT UI ---
-def main():
-    st.title("Momentum Investing Scanner ℹ️")
+    gain = pd.Series(gain).rolling(period).mean()
+    loss = pd.Series(loss).rolling(period).mean()
 
-    # Header Controls (Mirroring Image 1 & 2)
-    col1, col2, col3 = st.columns(3)
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+# -----------------------------
+# 3. Backtest Function
+# -----------------------------
+def backtest_rsi_strategy(df, rsi_period):
     
-    with col1:
-        chart = st.selectbox("Chart Type :", ["Candle", "P&F", "Renko"])
-        period = st.selectbox("Period :", [252, 120, 90, 60])
-        
-    with col2:
-        group = st.selectbox("Group :", ["Nifty 500 Index", "Nifty 100"])
-        use_ret = st.checkbox("Retracement :", value=True)
-        ret_val = st.number_input("% Within", value=50)
-
-    with col3:
-        mkt_filter = st.checkbox("MARKET TREND FILTER", value=True)
-        mkt_ema = st.selectbox("Index EMA :", [20, 200])
-
-    # Ticker input (Hidden in sidebar to keep UI clean)
-    tickers_raw = st.sidebar.text_area("Tickers", "RELIANCE.NS, TCS.NS, INFY.NS, HDFCBANK.NS, ICICIBANK.NS, BHARTIARTL.NS, SBIN.NS, LTIM.NS, TITAN.NS, ADANIENT.NS")
+    data = df.copy()
     
-    if st.button("SCAN", type="primary"):
-        engine = MomentumEngine(tickers_raw.split(","))
-        
-        with st.spinner("Syncing Data..."):
-            raw_data = engine.fetch_data()
-            
-            if raw_data is not None:
-                # Market Trend logic (Image 3)
-                bm_price = raw_data['Adj Close'][engine.benchmark]
-                bm_ema = bm_price.ewm(span=mkt_filter).mean()
-                
-                if mkt_filter and bm_price.iloc[-1] < bm_ema.iloc[-1]:
-                    st.error("⚠️ Market Regime: BEARISH (Wait for Index to cross EMA)")
-                else:
-                    st.success("✅ Market Regime: BULLISH")
+    # Calculate RSI
+    data['RSI'] = calculate_rsi(data['Close'], rsi_period)
+    
+    # RSI Moving Averages
+    data['RSI_MA_9'] = data['RSI'].rolling(9).mean()
+    data['RSI_MA_21'] = data['RSI'].rolling(21).mean()
+    
+    # Entry Condition
+    entry = (
+        (data['RSI'] > data['RSI_MA_9']) &
+        (data['RSI'].shift(1) <= data['RSI_MA_9'].shift(1)) &
+        (data['RSI_MA_9'] > data['RSI_MA_21'])
+    )
+    
+    # Exit Condition
+    exit = (
+        (data['RSI'] < data['RSI_MA_9']) &
+        (data['RSI'].shift(1) >= data['RSI_MA_9'].shift(1)) &
+        (data['RSI_MA_9'] < data['RSI_MA_21'])
+    )
+    
+    data['Position'] = 0
+    data.loc[entry, 'Position'] = 1
+    data.loc[exit, 'Position'] = 0
+    
+    data['Position'] = data['Position'].replace(to_replace=0, method='ffill')
+    data['Position'] = data['Position'].fillna(0)
+    
+    # Returns
+    data['Market_Return'] = data['Close'].pct_change()
+    data['Strategy_Return'] = data['Market_Return'] * data['Position'].shift(1)
+    
+    # Performance
+    cumulative_return = (1 + data['Strategy_Return']).cumprod().iloc[-1]
+    sharpe = (data['Strategy_Return'].mean() / data['Strategy_Return'].std()) * np.sqrt(252)
+    
+    return cumulative_return, sharpe, data
 
-                # Results
-                results = engine.calculate_scan(raw_data, period, ret_val, use_ret)
-                st.dataframe(results, use_container_width=True)
-            else:
-                st.error("Connection Failed. Check symbols.")
+# -----------------------------
+# 4. Optimize RSI Period 3–252
+# -----------------------------
+results = []
 
-    # Simulator Section (Image 4)
-    st.markdown("---")
-    with st.expander("🛠️ MOMENTUM INVESTING SIMULATOR"):
-        st.write("This engine calculates CAGR and Drawdown based on logic rebalancing.")
-        s1, s2 = st.columns(2)
-        s1.selectbox("Frequency:", ["Monthly", "Weekly"])
-        s2.number_input("Portfolio Size:", 5, 50, 20)
-        if st.button("RUN SIMULATOR"):
-            st.info("Simulation running on Optimizer Engine...")
+for period in range(3, 253):
+    try:
+        cum_ret, sharpe, _ = backtest_rsi_strategy(df, period)
+        results.append([period, cum_ret, sharpe])
+    except:
+        continue
 
-if __name__ == "__main__":
-    main()
+results_df = pd.DataFrame(results, columns=['RSI_Period', 'Cumulative_Return', 'Sharpe'])
+
+# Sort by Sharpe Ratio
+results_df = results_df.sort_values(by='Sharpe', ascending=False)
+
+print("\nTop 10 RSI Periods by Sharpe Ratio:\n")
+print(results_df.head(10))
+
+# -----------------------------
+# 5. Plot Best Strategy
+# -----------------------------
+best_period = results_df.iloc[0]['RSI_Period']
+_, _, best_data = backtest_rsi_strategy(df, int(best_period))
+
+plt.figure(figsize=(12,6))
+plt.plot((1 + best_data['Strategy_Return']).cumprod(), label="Strategy")
+plt.plot((1 + best_data['Market_Return']).cumprod(), label="Buy & Hold")
+plt.legend()
+plt.title(f"Best RSI Period: {best_period}")
+plt.show()
