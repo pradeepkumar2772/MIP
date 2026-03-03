@@ -1,5 +1,5 @@
 import yfinance as yf
-import pandas as pd
+import pd as pd
 import pandas_ta as ta
 import streamlit as st
 import datetime
@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v4.2", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v4.7", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Global 3D Optimizer & Detailer")
+st.title("🛡️ Pro-Tracer: Narrow-Band 3D Optimizer")
 st.sidebar.header("Global Settings")
 
 ticker = st.sidebar.text_input("Ticker Symbol", "TRENT.NS")
@@ -32,18 +32,18 @@ if df_raw.empty:
 else:
     # --- MODULE 1: GLOBAL 3D OPTIMIZER ---
     if mode == "Global 3D Optimizer":
-        st.header("🔬 3-Way Global Optimization Scan")
-        st.info("Searching Lengths (3-252), Entries (55-80), and Exits (35-60).")
+        st.header("🔬 Narrow-Band Strategy Optimizer")
+        st.info("Scanning RSI Lengths (3-252) with Entries (50-60) and Exits (40-60).")
 
-        if st.button("🚀 Start Global Deep-Scan"):
+        if st.button("🚀 Start Precision Scan"):
             all_results = []
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
             
-            # 3D Space (Step 15 for Length, 5 for Thresholds to maintain speed)
-            len_range = range(3, 253, 15)
-            ent_range = range(55, 81, 5)
-            ext_range = range(35, 61, 5)
+            # Optimization Parameters
+            len_range = range(3, 253, 10) # 10-step jump for broad cycle coverage
+            ent_range = range(50, 61, 2)  # High precision in narrow band
+            ext_range = range(40, 61, 2)  # High precision in narrow band
             
             progress_bar = st.progress(0)
             total_combos = len(len_range) * len(ent_range) * len(ext_range)
@@ -53,7 +53,8 @@ else:
                 rsi = ta.rsi(df['Close'], length=r_len)
                 for ent in ent_range:
                     for ext in ext_range:
-                        if ext >= ent: continue
+                        if ext >= ent: continue # Logical check: Must exit lower than entry
+                        
                         count += 1
                         progress_bar.progress(count / total_combos)
 
@@ -76,16 +77,16 @@ else:
                         })
 
             res_df = pd.DataFrame(all_results).sort_values('ROI %', ascending=False)
-            st.success("Global Deep-Scan Complete!")
+            st.success("Precision Scan Complete!")
             st.dataframe(res_df, use_container_width=True)
 
-    # --- MODULE 2: TRADE DETAILER (RE-INTEGRATED) ---
+    # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
-        st.header("📜 Trade Detailer & Performance Analysis")
+        st.header("📜 Performance Audit")
         c1, c2, c3, c4 = st.columns(4)
         in_rsi = c1.number_input("RSI Length", value=14)
-        in_ent = c2.number_input("Entry RSI", value=60)
-        in_ext = c3.number_input("Exit RSI", value=50)
+        in_ent = c2.slider("Entry RSI", 50, 60, 55)
+        in_ext = c3.slider("Exit RSI", 40, 60, 45)
         vol_mult = c4.number_input("Vol Spike (x)", value=1.5)
         
         if st.button("📊 Generate Detailed Report"):
@@ -118,8 +119,6 @@ else:
 
             if trades:
                 t_df = pd.DataFrame(trades)
-                
-                # Metrics logic
                 daily_rets = pd.Series(0.0, index=df.index)
                 for _, row in t_df.iterrows():
                     daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
@@ -136,7 +135,4 @@ else:
                 s3.metric("Recovery Factor", f"{rec_factor:.2f}")
                 
                 st.line_chart(100000 * cum_strategy)
-                st.write("### 📋 Trade Ledger")
                 st.dataframe(t_df, use_container_width=True)
-            else:
-                st.warning("No trades found.")
