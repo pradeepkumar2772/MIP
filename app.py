@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v3.1", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v3.2", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Institutional Momentum Engine")
+st.title("🛡️ Pro-Tracer: Institutional & Recovery Engine")
 st.sidebar.header("Global Settings")
 
 # --- Global Inputs ---
@@ -36,8 +36,8 @@ df_raw = get_data(ticker, start_date, end_date)
 if df_raw.empty:
     st.warning("Awaiting data...")
 else:
+    # --- MODULE 1: OPTIMIZER ---
     if mode == "Brute-Force Optimizer":
-        # Optimizer remains stable
         st.header("🔍 RSI Period Optimizer")
         if st.button("🚀 Run Optimization"):
             results = []
@@ -61,18 +61,19 @@ else:
                 results.append({'RSI_Len': r_len, 'ROI %': round(total_return * 100, 2), 'Max_DD %': round(max_dd * 100, 2)})
             st.dataframe(pd.DataFrame(results).sort_values('ROI %', ascending=False).head(20))
 
+    # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
         st.header("📜 Institutional Detailer & Recovery Analysis")
         col1, col2, col3, col4 = st.columns(4)
         in_rsi = col1.number_input("RSI Look-back", value=14)
         vol_mult = col2.number_input("Vol Spike (x Avg)", value=1.5, step=0.1)
-        vol_ma = col3.number_input("Vol Avg Period", value=20)
+        vol_ma_period = col3.number_input("Vol Avg Period", value=20)
         stop_loss_pct = col4.number_input("Stop Loss %", value=5.0)
         
         if st.button("📊 Generate Institutional Report"):
             df = df_raw.copy()
             df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
-            df['Vol_MA'] = df['Volume'].rolling(window=vol_ma).mean()
+            df['Vol_MA'] = df['Volume'].rolling(window=vol_ma_period).mean()
             df['Trend_EMA'] = ta.ema(df['Close'], length=200)
             
             trades = []
@@ -118,6 +119,9 @@ else:
                 
                 max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
                 total_ret_val = cum_strategy.iloc[-1] - 1
+                
+                # Recovery Factor = Net Profit / Abs(Max Drawdown)
+                # This shows how many times the profit covered the worst-case risk.
                 recovery_factor = abs(total_ret_val / max_dd_val) if max_dd_val != 0 else np.inf
                 
                 # --- Scorecard ---
@@ -125,10 +129,10 @@ else:
                 s1, s2, s3, s4 = st.columns(4)
                 s1.metric("Total ROI", f"{total_ret_val*100:.1f}%")
                 s2.metric("Max Drawdown", f"{max_dd_val*100:.2f}%")
-                s3.metric("Recovery Factor", f"{recovery_factor:.2f}")
+                s3.metric("Recovery Factor", f"{recovery_factor:.2f}", help="Total Profit / Absolute Max Drawdown")
                 s4.metric("Win Rate", f"{(t_df['P&L %'] > 0).mean()*100:.1f}%")
 
-                # --- Visuals ---
+                # --- Visuals (Fixed for Axis/Figure Handling) ---
                 chart_col1, chart_col2 = st.columns(2)
                 with chart_col1:
                     st.write("### Exit Breakdown")
@@ -144,5 +148,9 @@ else:
                 
                 st.write("### Detailed Trade Ledger")
                 st.dataframe(t_df)
+                
+                # Download functionality
+                csv = t_df.to_csv(index=False).encode('utf-8')
+                st.sidebar.download_button(label="📥 Download Ledger as CSV", data=csv, file_name=f"{ticker}_backtest.csv", mime="text/csv")
             else:
                 st.warning("No institutional setups found with current filters.")
