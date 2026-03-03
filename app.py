@@ -7,16 +7,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v4.2", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v4.3", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Global 3D Optimizer & Detailer")
-st.sidebar.header("Global Settings")
+st.title("🛡️ Pro-Tracer: 3D High-Precision Global Suite")
+st.sidebar.header("Scan Parameters")
 
 ticker = st.sidebar.text_input("Ticker Symbol", "TRENT.NS")
 start_date = st.sidebar.date_input("Start Date", datetime.date(1999, 1, 1))
 end_date = st.sidebar.date_input("End Date", datetime.date.today())
 
-mode = st.sidebar.radio("Select Module", ["Global 3D Optimizer", "Trade Detailer"])
+mode = st.sidebar.radio("Module", ["Global 3D Optimizer", "Trade Detailer"])
 
 @st.cache_data
 def get_data(symbol, start, end):
@@ -32,35 +32,46 @@ if df_raw.empty:
 else:
     # --- MODULE 1: GLOBAL 3D OPTIMIZER ---
     if mode == "Global 3D Optimizer":
-        st.header("🔬 3-Way Global Optimization Scan")
-        st.info("Searching Lengths (3-252), Entries (55-80), and Exits (35-60).")
+        st.header("🔬 High-Precision 3D Scan")
+        st.info("Scanning 125 Lengths (Step 2) across 36 Entry/Exit Matrix combinations.")
 
-        if st.button("🚀 Start Global Deep-Scan"):
+        if st.button("🚀 Start High-Precision Global Scan"):
             all_results = []
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
             
-            # 3D Space (Step 15 for Length, 5 for Thresholds to maintain speed)
-            len_range = range(3, 253, 15)
-            ent_range = range(55, 81, 5)
-            ext_range = range(35, 61, 5)
+            # --- HIGH PRECISION 3D SPACE ---
+            len_range = range(3, 253, 2)  # Step 2 as requested
+            ent_range = range(55, 81, 5)   # Entry levels
+            ext_range = range(35, 61, 5)   # Exit levels
             
-            progress_bar = st.progress(0)
             total_combos = len(len_range) * len(ent_range) * len(ext_range)
+            progress_bar = st.progress(0)
+            status = st.empty()
             count = 0
 
+            # Pre-calculate Trend Filter to save time in loop
+            df['Trend_OK'] = df['Close'] > ta.ema(df['Close'], length=200)
+
             for r_len in len_range:
+                # Pre-calculate RSI for this length
                 rsi = ta.rsi(df['Close'], length=r_len)
+                if rsi is None: continue
+                
                 for ent in ent_range:
                     for ext in ext_range:
-                        if ext >= ent: continue
+                        if ext >= ent: continue 
+                        
                         count += 1
-                        progress_bar.progress(count / total_combos)
+                        if count % 50 == 0: # UI Refresh every 50 combos
+                            progress_bar.progress(count / total_combos)
+                            status.text(f"Scanning Precision Node {count}/{total_combos} | Current RSI Len: {r_len}")
 
+                        # Simulation
                         sig = pd.Series(0, index=df.index)
                         in_pos = False
                         for j in range(1, len(df)):
-                            if not in_pos and rsi.iloc[j] > ent: in_pos = True
+                            if not in_pos and rsi.iloc[j] > ent and df['Trend_OK'].iloc[j]: in_pos = True
                             elif in_pos and rsi.iloc[j] < ext: in_pos = False
                             sig.iloc[j] = 1 if in_pos else 0
                         
@@ -76,12 +87,19 @@ else:
                         })
 
             res_df = pd.DataFrame(all_results).sort_values('ROI %', ascending=False)
-            st.success("Global Deep-Scan Complete!")
-            st.dataframe(res_df, use_container_width=True)
+            st.success("High-Precision Scan Complete!")
+            
+            # Show the "Golden Peak"
+            st.subheader("🏆 The Global Top 10 High-Precision Strategies")
+            st.dataframe(res_df.head(10), use_container_width=True)
 
-    # --- MODULE 2: TRADE DETAILER (RE-INTEGRATED) ---
+            # Export
+            csv_data = res_df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Full 3D Precision Results", data=csv_data, file_name=f"{ticker}_precision_3D.csv")
+
+    # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
-        st.header("📜 Trade Detailer & Performance Analysis")
+        st.header("📜 High-Precision Trade Ledger")
         c1, c2, c3, c4 = st.columns(4)
         in_rsi = c1.number_input("RSI Length", value=14)
         in_ent = c2.number_input("Entry RSI", value=60)
@@ -118,25 +136,10 @@ else:
 
             if trades:
                 t_df = pd.DataFrame(trades)
-                
-                # Metrics logic
                 daily_rets = pd.Series(0.0, index=df.index)
-                for _, row in t_df.iterrows():
-                    daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
+                for _, row in t_df.iterrows(): daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
                 cum_strategy = (1 + daily_rets).cumprod()
                 
-                max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
-                total_ret_val = cum_strategy.iloc[-1] - 1
-                rec_factor = abs(total_ret_val / max_dd_val) if max_dd_val != 0 else np.inf
-                
                 st.subheader("📊 Quant Scorecard")
-                s1, s2, s3 = st.columns(3)
-                s1.metric("Total ROI", f"{total_ret_val*100:.1f}%")
-                s2.metric("Max Drawdown", f"{max_dd_val*100:.2f}%")
-                s3.metric("Recovery Factor", f"{rec_factor:.2f}")
-                
                 st.line_chart(100000 * cum_strategy)
-                st.write("### 📋 Trade Ledger")
                 st.dataframe(t_df, use_container_width=True)
-            else:
-                st.warning("No trades found.")
