@@ -1,64 +1,56 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
-import matplotlib
 import matplotlib.pyplot as plt
 
-# --- FIX: Force an interactive window (use 'TkAgg' or 'Qt5Agg') ---
-# If one doesn't work, try the other. 
-try:
-    matplotlib.use('TkAgg') 
-except:
-    matplotlib.use('Qt5Agg')
+# 1. Streamlit UI
+st.title("Pro-Tracer: RSI Backtest")
+ticker = st.text_input("Enter Ticker (e.g., RELIANCE.NS)", value="RELIANCE.NS")
 
-# 1. Download Data
-ticker = "RELIANCE.NS"
-print(f"Downloading data for {ticker}...")
+# 2. Data Download
 data = yf.download(ticker, start="2020-01-01")
 
-# --- DATA CHECK ---
-if data.empty:
-    print("Error: No data downloaded. Check your internet or ticker symbol.")
-else:
-    print("Data received! Calculating RSI...")
-
-    # 2. Calculate RSI
+if not data.empty:
+    # 3. RSI Calculation
     data['RSI'] = ta.rsi(data['Close'], length=14)
 
-    # 3. Simple Momentum Strategy
+    # 4. Strategy Logic
     data['Signal'] = 0
-    data.loc[data['RSI'] > 50, 'Signal'] = 1  # Bullish
-    data.loc[data['RSI'] < 40, 'Signal'] = 0  # Exit
+    data.loc[data['RSI'] > 50, 'Signal'] = 1
+    data.loc[data['RSI'] < 40, 'Signal'] = 0
 
-    # 4. Calculate Strategy Performance
+    # 5. Returns Calculation
     data['Market_Return'] = data['Close'].pct_change()
     data['Strategy_Return'] = data['Market_Return'] * data['Signal'].shift(1)
-
-    data['Cumulative_Market'] = (1 + data['Market_Return']).fillna(0).cumprod()
     data['Cumulative_Strategy'] = (1 + data['Strategy_Return']).fillna(0).cumprod()
+    data['Cumulative_Market'] = (1 + data['Market_Return']).fillna(0).cumprod()
 
-    # 5. Create the Plot
-    plt.figure(figsize=(12, 7))
-    
-    # Top Plot: Strategy vs Market
-    plt.subplot(2, 1, 1)
-    plt.plot(data['Cumulative_Strategy'], label='RSI Strategy (Pro-Tracer)', color='green', lw=2)
-    plt.plot(data['Cumulative_Market'], label='Buy & Hold', color='gray', alpha=0.5)
-    plt.title(f"RSI Momentum Performance: {ticker}")
-    plt.legend()
-    plt.grid(True)
+    # 6. Plotting (The Streamlit Way)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [2, 1]})
 
-    # Bottom Plot: RSI Levels
-    plt.subplot(2, 1, 2)
-    plt.plot(data['RSI'], color='purple', lw=1)
-    plt.axhline(50, color='black', linestyle='--')
-    plt.axhline(70, color='red', alpha=0.3)
-    plt.axhline(30, color='blue', alpha=0.3)
-    plt.fill_between(data.index, 30, 70, color='purple', alpha=0.05)
-    plt.title("RSI Levels (14 period)")
-    plt.grid(True)
+    # Top Plot: Performance
+    ax1.plot(data['Cumulative_Strategy'], label='RSI Strategy', color='green')
+    ax1.plot(data['Cumulative_Market'], label='Buy & Hold', color='gray', alpha=0.5)
+    ax1.set_title(f"Equity Curve: {ticker}")
+    ax1.legend()
+    ax1.grid(True)
+
+    # Bottom Plot: RSI
+    ax2.plot(data['RSI'], color='purple')
+    ax2.axhline(50, color='black', linestyle='--', alpha=0.5)
+    ax2.axhline(70, color='red', linestyle=':', alpha=0.3)
+    ax2.axhline(30, color='blue', linestyle=':', alpha=0.3)
+    ax2.set_title("RSI Oscillator")
+    ax2.grid(True)
 
     plt.tight_layout()
-    
-    print("Displaying chart... look for a new window!")
-    plt.show() # <--- This is the most important line!
+
+    # INSTEAD OF plt.show(), use st.pyplot()
+    st.pyplot(fig)
+
+    # 7. Metrics
+    total_ret = (data['Cumulative_Strategy'].iloc[-1] - 1) * 100
+    st.metric("Total Strategy Return", f"{total_ret:.2f}%")
+else:
+    st.error("No data found for this ticker.")
