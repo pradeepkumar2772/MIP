@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v3.5", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v3.6", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Visual Sensitivity Optimizer")
+st.title("🛡️ Pro-Tracer: Full-Spectrum Optimizer")
 st.sidebar.header("Global Settings")
 
 ticker = st.sidebar.text_input("Ticker Symbol", "TRENT.NS")
@@ -36,15 +36,14 @@ if df_raw.empty:
     st.warning("Awaiting data...")
 else:
     if mode == "Visual Optimizer":
-        st.header("📈 RSI Sensitivity Analysis (3 to 252)")
-        st.info("We are scanning every 'Momentum Cycle' to find where this stock thrives.")
+        st.header("📈 Full RSI Sensitivity Analysis (3 to 252)")
         
-        if st.button("🚀 Run Deep Sensitivity Scan"):
+        if st.button("🚀 Run Full Spectrum Scan"):
             results = []
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
             
-            # Range 3-252, Step 5 for speed
+            # Range 3-252, Step 5 (Total 50 test cases)
             rsi_range = range(3, 253, 5) 
             progress_bar = st.progress(0)
             
@@ -52,10 +51,9 @@ else:
                 progress_bar.progress((i + 1) / len(rsi_range))
                 rsi = ta.rsi(df['Close'], length=r_len)
                 
-                # Fast Vectorized Simulation
+                # Simulation Logic (Entry 60 / Exit 50)
                 sig = pd.Series(0, index=df.index)
                 in_pos = False
-                # Note: For massive ranges, we use a loop to respect the 60/50 state logic
                 for j in range(1, len(df)):
                     if not in_pos and rsi.iloc[j] > 60: in_pos = True
                     elif in_pos and rsi.iloc[j] < 50: in_pos = False
@@ -64,38 +62,51 @@ else:
                 strat_ret = (df['Market_Ret'] * sig.shift(1)).fillna(0)
                 cum_ret = (1 + strat_ret).cumprod()
                 total_return = (cum_ret.iloc[-1] - 1) * 100
+                max_dd = ((cum_ret - cum_ret.cummax()) / cum_ret.cummax()).min() * 100
                 
-                results.append({'RSI_Len': r_len, 'ROI': total_return})
+                results.append({
+                    'RSI_Len': r_len, 
+                    'ROI %': round(total_return, 2),
+                    'Max_DD %': round(max_dd, 2),
+                    'Recovery Factor': round(abs(total_return / max_dd), 2) if max_dd != 0 else 0
+                })
             
             res_df = pd.DataFrame(results)
             
-            # --- Sensitivity Chart ---
-            st.write("### The Momentum Sensitivity Curve")
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.plot(res_df['RSI_Len'], res_df['ROI'], marker='o', linestyle='-', color='#1f77b4')
-            ax.set_xlabel("RSI Look-back Period (Days)")
-            ax.set_ylabel("Total ROI (%)")
-            ax.set_title(f"Profit Sensitivity for {ticker}")
-            ax.grid(True, alpha=0.3)
+            # 1. Visualization
+            fig, ax = plt.subplots(figsize=(12, 5))
+            ax.plot(res_df['RSI_Len'], res_df['ROI %'], marker='o', color='#2ca02c', label='ROI %')
+            ax.set_xlabel("RSI Look-back Period")
+            ax.set_ylabel("Total ROI %")
+            ax.set_title(f"Full Strategy Sensitivity: {ticker}")
+            ax.grid(True, alpha=0.2)
             st.pyplot(fig)
             
-            st.success("Scan Complete!")
-            st.write("### Ranked Results")
-            st.dataframe(res_df.sort_values('ROI', ascending=False))
+            # 2. Complete Ranked List (No .head() restriction)
+            st.write("### 🏆 Full Ranked Strategy List")
+            st.info("Showing all 50+ combinations tested. Sort by clicking column headers.")
+            
+            # Highlight high Recovery Factors
+            full_list = res_df.sort_values('ROI %', ascending=False).reset_index(drop=True)
+            st.dataframe(full_list, use_container_width=True)
+            
+            # 3. Data Export
+            csv_opt = full_list.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download All Optimizer Results", data=csv_opt, file_name=f"{ticker}_full_optimization.csv", mime="text/csv")
 
     elif mode == "Trade Detailer":
-        # ... [Rest of Trade Detailer code from v3.3 remains stable here] ...
+        # Trade Detailer logic remains stable with v3.3 features (Prices, Vol Spike, Scorecard)
         st.header("📜 Trade Detailer & Recovery Analysis")
         col1, col2, col3, col4 = st.columns(4)
         in_rsi = col1.number_input("RSI Look-back", value=14)
         vol_mult = col2.number_input("Vol Spike (x Avg)", value=1.5)
-        vol_ma = col3.number_input("Vol Avg Period", value=20)
-        stop_loss_pct = col4.number_input("Stop Loss %", value=5.0)
+        vol_ma_p = col3.number_input("Vol Avg Period", value=20)
+        stop_loss_p = col4.number_input("Stop Loss %", value=5.0)
         
         if st.button("📊 Generate Detailed Report"):
             df = df_raw.copy()
             df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
-            df['Vol_MA'] = df['Volume'].rolling(window=vol_ma).mean()
+            df['Vol_MA'] = df['Volume'].rolling(window=vol_ma_p).mean()
             df['Trend_EMA'] = ta.ema(df['Close'], length=200)
             
             trades = []
@@ -110,17 +121,32 @@ else:
                     if rsi_v > 60 and prev_rsi <= 60 and curr_p > df['Trend_EMA'].iloc[i] and vol_spike:
                         in_trade, entry_date, entry_price = True, df.index[i], curr_p
                 elif in_trade:
-                    sl_hit = stop_loss_pct > 0 and curr_p <= entry_price * (1 - stop_loss_pct/100)
+                    sl_hit = stop_loss_p > 0 and curr_p <= entry_price * (1 - stop_loss_p/100)
                     rsi_exit = rsi_v < 50 and prev_rsi >= 50
                     if sl_hit or rsi_exit:
                         in_trade = False
-                        exit_p = entry_price * (1 - stop_loss_pct/100) if sl_hit else curr_p
+                        exit_p = entry_price * (1 - stop_loss_p/100) if sl_hit else curr_p
                         pnl = ((exit_p - entry_price) / entry_price) * 100
-                        trades.append({"Entry Date": entry_date.date(), "Exit Date": df.index[i].date(), "Entry Price": entry_price, "Exit Price": exit_p, "P&L %": round(pnl, 2)})
+                        trades.append({
+                            "Entry Date": entry_date.date(), "Exit Date": df.index[i].date(), 
+                            "Entry Price": round(entry_price, 2), "Exit Price": round(exit_p, 2), 
+                            "P&L %": round(pnl, 2), "Reason": "SL" if sl_hit else "RSI 50"
+                        })
 
             if trades:
                 t_df = pd.DataFrame(trades)
+                # Performance Visuals
+                daily_rets = pd.Series(0.0, index=df.index)
+                for _, row in t_df.iterrows(): daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
+                cum_strategy = (1 + daily_rets).cumprod()
+                
                 st.subheader("📊 Quant Scorecard")
-                st.metric("Total Return", f"{t_df['P&L %'].sum():.2f}%")
-                st.line_chart(t_df['P&L %'].cumsum())
-                st.dataframe(t_df)
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total ROI", f"{(cum_strategy.iloc[-1]-1)*100:.2f}%")
+                c2.metric("Win Rate", f"{(t_df['P&L %']>0).mean()*100:.1f}%")
+                c3.metric("Max DD", f"{((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()*100:.2f}%")
+                
+                st.line_chart(100000 * cum_strategy)
+                st.dataframe(t_df, use_container_width=True)
+            else:
+                st.warning("No trades found.")
