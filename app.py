@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v3.2", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v3.3", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Institutional & Recovery Engine")
+st.title("🛡️ Pro-Tracer: Institutional Momentum & Recovery Tracker")
 st.sidebar.header("Global Settings")
 
 # --- Global Inputs ---
@@ -79,6 +79,8 @@ else:
             trades = []
             in_trade = False
             entry_price = 0
+            entry_date = None
+
             for i in range(1, len(df)):
                 curr_p = float(df['Close'].iloc[i])
                 rsi_v = df['RSI'].iloc[i]
@@ -86,13 +88,13 @@ else:
                 vol_v = df['Volume'].iloc[i]
                 v_ma = df['Vol_MA'].iloc[i]
                 
-                # --- ENTRY: RSI > 60 + VOL SPIKE + ABOVE 200 EMA ---
+                # --- ENTRY CONDITION ---
                 if not in_trade:
                     vol_spike = vol_v > (v_ma * vol_mult) if not pd.isna(v_ma) else False
                     if rsi_v > 60 and prev_rsi <= 60 and curr_p > df['Trend_EMA'].iloc[i] and vol_spike:
                         in_trade, entry_date, entry_price = True, df.index[i], curr_p
                 
-                # --- EXIT: RSI < 50 OR STOP LOSS ---
+                # --- EXIT CONDITION ---
                 elif in_trade:
                     sl_hit = stop_loss_pct > 0 and curr_p <= entry_price * (1 - stop_loss_pct/100)
                     rsi_exit = rsi_v < 50 and prev_rsi >= 50
@@ -101,17 +103,21 @@ else:
                         exit_p = entry_price * (1 - stop_loss_pct/100) if sl_hit else curr_p
                         reason = "Stop Loss" if sl_hit else "RSI 50 Exit"
                         pnl = ((exit_p - entry_price) / entry_price) * 100
+                        
+                        # Added Entry Price and Exit Price to the ledger dictionary
                         trades.append({
-                            "Entry Date": entry_date.date(), 
-                            "Exit Date": df.index[i].date(), 
-                            "P&L %": round(pnl, 2), 
+                            "Entry Date": entry_date.date(),
+                            "Exit Date": df.index[i].date(),
+                            "Entry Price": round(entry_price, 2),
+                            "Exit Price": round(exit_p, 2),
+                            "P&L %": round(pnl, 2),
                             "Exit Reason": reason
                         })
 
             if trades:
                 t_df = pd.DataFrame(trades)
                 
-                # Performance Analysis
+                # Metrics Calculation
                 daily_rets = pd.Series(0.0, index=df.index)
                 for _, row in t_df.iterrows():
                     daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
@@ -119,9 +125,6 @@ else:
                 
                 max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
                 total_ret_val = cum_strategy.iloc[-1] - 1
-                
-                # Recovery Factor = Net Profit / Abs(Max Drawdown)
-                # This shows how many times the profit covered the worst-case risk.
                 recovery_factor = abs(total_ret_val / max_dd_val) if max_dd_val != 0 else np.inf
                 
                 # --- Scorecard ---
@@ -129,10 +132,10 @@ else:
                 s1, s2, s3, s4 = st.columns(4)
                 s1.metric("Total ROI", f"{total_ret_val*100:.1f}%")
                 s2.metric("Max Drawdown", f"{max_dd_val*100:.2f}%")
-                s3.metric("Recovery Factor", f"{recovery_factor:.2f}", help="Total Profit / Absolute Max Drawdown")
+                s3.metric("Recovery Factor", f"{recovery_factor:.2f}")
                 s4.metric("Win Rate", f"{(t_df['P&L %'] > 0).mean()*100:.1f}%")
 
-                # --- Visuals (Fixed for Axis/Figure Handling) ---
+                # --- Visuals ---
                 chart_col1, chart_col2 = st.columns(2)
                 with chart_col1:
                     st.write("### Exit Breakdown")
@@ -143,14 +146,14 @@ else:
                     st.pyplot(fig1)
                 
                 with chart_col2:
-                    st.write("### Equity Curve (₹1L Start)")
+                    st.write("### Equity Curve (Starting ₹1L)")
                     st.line_chart(100000 * cum_strategy)
                 
                 st.write("### Detailed Trade Ledger")
-                st.dataframe(t_df)
+                st.dataframe(t_df, use_container_width=True)
                 
-                # Download functionality
+                # Sidebar Download
                 csv = t_df.to_csv(index=False).encode('utf-8')
-                st.sidebar.download_button(label="📥 Download Ledger as CSV", data=csv, file_name=f"{ticker}_backtest.csv", mime="text/csv")
+                st.sidebar.download_button(label="📥 Download Full Ledger (CSV)", data=csv, file_name=f"{ticker}_v3.3_report.csv", mime="text/csv")
             else:
-                st.warning("No institutional setups found with current filters.")
+                st.warning("No trades triggered with these institutional filters.")
