@@ -76,80 +76,43 @@ else:
     # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
         st.header("📜 Trade Detailer & Advanced Scorecard")
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         in_rsi = col1.number_input("RSI Look-back", value=14, min_value=3)
         in_ema = col2.number_input("EMA (Average Line) Length", value=9, min_value=3)
-        stop_loss_pct = col3.number_input("Stop Loss % (0 to disable)", value=0.0, min_value=0.0, step=0.5)
         
         if st.button("📊 Generate Quant Report"):
             df = df_raw.copy()
             df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
             df['RSI_EMA'] = ta.ema(df['RSI'], length=in_ema)
-            
-            trades = []
-            in_trade = False
-            entry_price = 0
-            entry_date = None
-            
-            # Signal Tracking
-            # 1 = RSI above Average, 0 = RSI below Average
             df['Signal'] = (df['RSI'] > df['RSI_EMA']).astype(int)
             df['Change'] = df['Signal'].diff()
 
+            trades = []
+            in_trade = False
             for i in range(1, len(df)):
-                current_price = float(df['Close'].iloc[i])
-                
-                # ENTRY LOGIC
                 if df['Change'].iloc[i] == 1 and not in_trade:
-                    in_trade = True
-                    entry_date = df.index[i]
-                    entry_price = current_price
-                
-                # EXIT LOGIC
-                elif in_trade:
-                    # Condition 1: RSI Crosses Below Average
-                    rsi_exit = df['Change'].iloc[i] == -1
-                    
-                    # Condition 2: Stop Loss Triggered
-                    sl_exit = False
-                    if stop_loss_pct > 0:
-                        if current_price <= entry_price * (1 - stop_loss_pct / 100):
-                            sl_exit = True
-                    
-                    if rsi_exit or sl_exit:
-                        in_trade = False
-                        exit_date = df.index[i]
-                        exit_price = current_price
-                        pnl = ((exit_price - entry_price) / entry_price) * 100
-                        
-                        trades.append({
-                            "Entry Date": entry_date.date(), 
-                            "Exit Date": exit_date.date(), 
-                            "Entry Price": float(entry_price), 
-                            "Exit Price": float(exit_price), 
-                            "P&L %": float(pnl),
-                            "Exit Type": "Stop Loss" if sl_exit else "RSI Crossover"
-                        })
+                    in_trade, entry_date, entry_price = True, df.index[i], df['Close'].iloc[i]
+                elif df['Change'].iloc[i] == -1 and in_trade:
+                    in_trade, exit_date, exit_price = False, df.index[i], df['Close'].iloc[i]
+                    pnl = ((exit_price - entry_price) / entry_price) * 100
+                    trades.append({
+                        "Entry Date": entry_date.date(), 
+                        "Exit Date": exit_date.date(), 
+                        "Entry Price": float(entry_price), 
+                        "Exit Price": float(exit_price), 
+                        "P&L %": float(pnl)
+                    })
 
             if trades:
                 t_df = pd.DataFrame(trades)
                 
                 # --- Advanced Calculations ---
-                # To reflect Stop Loss in the charts, we build a custom daily returns series
-                # based on the realized trades
-                daily_ret = pd.Series(0.0, index=df.index)
-                for index, row in t_df.iterrows():
-                    # Simplified daily attribution: applying P&L to the exit date for visual equity
-                    daily_ret.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
-
-                # Note: For Quant metrics, we use the trade-level P&L for accuracy
-                total_ret_val = (1 + t_df['P&L %']/100).prod() - 1
+                daily_ret = (df['Close'].pct_change() * df['Signal'].shift(1)).fillna(0)
+                cum_strategy = (1 + daily_ret).cumprod()
                 
+                total_ret_val = cum_strategy.iloc[-1] - 1
                 num_years = max((df.index[-1] - df.index[0]).days / 365.25, 0.1)
                 cagr = ((1 + total_ret_val)**(1/num_years) - 1) if total_ret_val > -1 else -1
-                
-                # Equity Curve for Max DD
-                cum_strategy = (1 + daily_ret).cumprod()
                 max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
                 
                 # Win/Loss Calculations
@@ -182,7 +145,8 @@ else:
                 final_value = initial_capital * (1 + total_ret_val)
                 st.write(f"If you started with **₹1,00,000**, it would now be worth: **₹{final_value:,.2f}**")
                 
-                st.line_chart(initial_capital * cum_strategy)
+                comp_curve = initial_capital * cum_strategy
+                st.line_chart(comp_curve)
 
                 st.write("### Detailed Trade Ledger")
                 st.dataframe(t_df)
