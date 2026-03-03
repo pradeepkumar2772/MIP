@@ -2,132 +2,156 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-# ===============================
+# =============================
 # CONFIGURATION
-# ===============================
+# =============================
 symbol = "AAPL"
-start_date = "2010-01-01"
+start_date = "2015-01-01"
 end_date = "2024-01-01"
+
 transaction_cost = 0.0005   # 0.05%
 slippage = 0.0005           # 0.05%
 
-# ===============================
-# DATA DOWNLOAD
-# ===============================
+# =============================
+# DOWNLOAD DATA
+# =============================
 df = yf.download(symbol, start=start_date, end=end_date)
+
+# Fix possible MultiIndex columns
+if isinstance(df.columns, pd.MultiIndex):
+    df.columns = df.columns.get_level_values(0)
+
 df = df[['Close']].dropna()
 
-# ===============================
-# RSI FUNCTION (Institutional Safe)
-# ===============================
+# =============================
+# RSI FUNCTION (Wilder / RMA)
+# =============================
 def compute_rsi(price, period):
     delta = price.diff()
+
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
     avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
 
-    rs = avg_gain / avg_loss
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
+
     return rsi
 
-# ===============================
+
+# =============================
 # PERFORMANCE METRICS
-# ===============================
+# =============================
 def performance_metrics(returns):
+
     returns = returns.dropna()
+
+    if len(returns) < 50:
+        return None
+
     equity = (1 + returns).cumprod()
 
-    total_return = equity.iloc[-1] - 1
     years = len(returns) / 252
-    cagr = (equity.iloc[-1]) ** (1 / years) - 1
+    cagr = equity.iloc[-1]**(1/years) - 1 if years > 0 else 0
 
     drawdown = equity / equity.cummax() - 1
     max_dd = drawdown.min()
 
-    sharpe = np.sqrt(252) * returns.mean() / returns.std()
-    sortino = np.sqrt(252) * returns.mean() / returns[returns < 0].std()
+    if returns.std() == 0:
+        sharpe = 0
+    else:
+        sharpe = np.sqrt(252) * returns.mean() / returns.std()
 
     return {
-        "Total Return": total_return,
         "CAGR": cagr,
-        "Max Drawdown": max_dd,
         "Sharpe": sharpe,
-        "Sortino": sortino
+        "MaxDD": max_dd
     }
 
-# ===============================
+
+# =============================
 # BACKTEST FUNCTION
-# ===============================
+# =============================
 def backtest(data, rsi_period):
 
     df = data.copy()
 
-    df['RSI'] = compute_rsi(df['Close'], rsi_period)
-    df['RSI_MA_9'] = df['RSI'].rolling(9).mean()
+    # Indicators
+    df["RSI"] = compute_rsi(df["Close"], rsi_period)
+    df["RSI_MA_9"] = df["RSI"].rolling(9).mean()
+    df["RSI_MA_21"] = df["RSI"].rolling(21).mean()
 
-    # Entry
+    # Entry: RSI crosses above MA9
     entry = (
-        (df['RSI'] > df['RSI_MA_9']) &
-        (df['RSI'].shift(1) <= df['RSI_MA_9'].shift(1))
+        (df["RSI"] > df["RSI_MA_9"]) &
+        (df["RSI"].shift(1) <= df["RSI_MA_9"].shift(1))
     )
 
-    # Exit
+    # Exit: RSI crosses below MA9
     exit = (
-        (df['RSI'] < df['RSI_MA_9']) &
-        (df['RSI'].shift(1) >= df['RSI_MA_9'].shift(1))
+        (df["RSI"] < df["RSI_MA_9"]) &
+        (df["RSI"].shift(1) >= df["RSI_MA_9"].shift(1))
     )
 
-    df['signal'] = 0
-    df.loc[entry, 'signal'] = 1
-    df.loc[exit, 'signal'] = 0
+    # Signal column
+    df["signal"] = np.nan
+    df.loc[entry, "signal"] = 1
+    df.loc[exit, "signal"] = 0
 
-    df['position'] = df['signal'].replace(to_replace=0, method='ffill')
-    df['position'] = df['position'].fillna(0)
+    # Forward fill positions (NO deprecated replace)
+    df["position"] = df["signal"].ffill().fillna(0)
 
-    df['returns'] = df['Close'].pct_change()
+    # Market returns
+    df["returns"] = df["Close"].pct_change()
 
-    # Apply slippage & cost on trade days
-    trades = df['position'].diff().abs()
+    # Trade detection
+    trades = df["position"].diff().abs()
+
     cost = trades * (transaction_cost + slippage)
 
-    df['strategy_returns'] = (
-        df['position'].shift(1) * df['returns']
+    # Strategy returns
+    df["strategy_returns"] = (
+        df["position"].shift(1) * df["returns"]
         - cost
     )
 
-    metrics = performance_metrics(df['strategy_returns'])
+    return performance_metrics(df["strategy_returns"])
 
-    return metrics
 
-# ===============================
+# =============================
 # TRAIN / TEST SPLIT
-# ===============================
+# =============================
 split = int(len(df) * 0.7)
+
 train = df.iloc[:split]
 test = df.iloc[split:]
 
 results = []
 
 for period in range(3, 253):
+
     train_metrics = backtest(train, period)
     test_metrics = backtest(test, period)
+
+    if train_metrics is None or test_metrics is None:
+        continue
 
     results.append([
         period,
         train_metrics["Sharpe"],
         test_metrics["Sharpe"],
         test_metrics["CAGR"],
-        test_metrics["Max Drawdown"]
+        test_metrics["MaxDD"]
     ])
 
 results_df = pd.DataFrame(
     results,
-    columns=["RSI_Period", "Train Sharpe", "Test Sharpe", "Test CAGR", "Test MaxDD"]
+    columns=["RSI_Period", "Train_Sharpe", "Test_Sharpe", "Test_CAGR", "Test_MaxDD"]
 )
 
-results_df = results_df.sort_values("Test Sharpe", ascending=False)
+results_df = results_df.sort_values("Test_Sharpe", ascending=False)
 
-print("\nTop 10 Stable RSI Periods (Out-of-Sample):\n")
+print("\nTop 10 RSI Periods (Out-of-Sample Ranked):\n")
 print(results_df.head(10))
