@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v3.0", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v3.1", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Institutional Momentum (RSI 60 + Vol)")
+st.title("🛡️ Pro-Tracer: Institutional Momentum Engine")
 st.sidebar.header("Global Settings")
 
 # --- Global Inputs ---
@@ -36,8 +36,8 @@ df_raw = get_data(ticker, start_date, end_date)
 if df_raw.empty:
     st.warning("Awaiting data...")
 else:
-    # --- MODULE 1: OPTIMIZER ---
     if mode == "Brute-Force Optimizer":
+        # Optimizer remains stable
         st.header("🔍 RSI Period Optimizer")
         if st.button("🚀 Run Optimization"):
             results = []
@@ -45,7 +45,6 @@ else:
             df['Market_Ret'] = df['Close'].pct_change()
             rsi_range = range(5, 41, 2) 
             progress_bar = st.progress(0)
-            
             for i, r_len in enumerate(rsi_range):
                 progress_bar.progress((i + 1) / len(rsi_range))
                 rsi = ta.rsi(df['Close'], length=r_len)
@@ -55,7 +54,6 @@ else:
                     if not in_pos and rsi.iloc[j] > 60: in_pos = True
                     elif in_pos and rsi.iloc[j] < 50: in_pos = False
                     sig.iloc[j] = 1 if in_pos else 0
-                
                 strat_ret = (df['Market_Ret'] * sig.shift(1)).fillna(0)
                 cum_ret = (1 + strat_ret).cumprod()
                 total_return = cum_ret.iloc[-1] - 1
@@ -63,7 +61,6 @@ else:
                 results.append({'RSI_Len': r_len, 'ROI %': round(total_return * 100, 2), 'Max_DD %': round(max_dd * 100, 2)})
             st.dataframe(pd.DataFrame(results).sort_values('ROI %', ascending=False).head(20))
 
-    # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
         st.header("📜 Institutional Detailer & Recovery Analysis")
         col1, col2, col3, col4 = st.columns(4)
@@ -80,6 +77,7 @@ else:
             
             trades = []
             in_trade = False
+            entry_price = 0
             for i in range(1, len(df)):
                 curr_p = float(df['Close'].iloc[i])
                 rsi_v = df['RSI'].iloc[i]
@@ -89,7 +87,7 @@ else:
                 
                 # --- ENTRY: RSI > 60 + VOL SPIKE + ABOVE 200 EMA ---
                 if not in_trade:
-                    vol_spike = vol_v > (v_ma * vol_mult)
+                    vol_spike = vol_v > (v_ma * vol_mult) if not pd.isna(v_ma) else False
                     if rsi_v > 60 and prev_rsi <= 60 and curr_p > df['Trend_EMA'].iloc[i] and vol_spike:
                         in_trade, entry_date, entry_price = True, df.index[i], curr_p
                 
@@ -102,12 +100,17 @@ else:
                         exit_p = entry_price * (1 - stop_loss_pct/100) if sl_hit else curr_p
                         reason = "Stop Loss" if sl_hit else "RSI 50 Exit"
                         pnl = ((exit_p - entry_price) / entry_price) * 100
-                        trades.append({"Entry Date": entry_date.date(), "Exit Date": df.index[i].date(), "P&L %": round(pnl, 2), "Exit Reason": reason})
+                        trades.append({
+                            "Entry Date": entry_date.date(), 
+                            "Exit Date": df.index[i].date(), 
+                            "P&L %": round(pnl, 2), 
+                            "Exit Reason": reason
+                        })
 
             if trades:
                 t_df = pd.DataFrame(trades)
                 
-                # Performance & Recovery Factor
+                # Performance Analysis
                 daily_rets = pd.Series(0.0, index=df.index)
                 for _, row in t_df.iterrows():
                     daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
@@ -115,25 +118,31 @@ else:
                 
                 max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
                 total_ret_val = cum_strategy.iloc[-1] - 1
-                
-                # Recovery Factor = Net Profit / Max Drawdown
                 recovery_factor = abs(total_ret_val / max_dd_val) if max_dd_val != 0 else np.inf
                 
+                # --- Scorecard ---
                 st.subheader("📊 Institutional Scorecard")
                 s1, s2, s3, s4 = st.columns(4)
                 s1.metric("Total ROI", f"{total_ret_val*100:.1f}%")
                 s2.metric("Max Drawdown", f"{max_dd_val*100:.2f}%")
-                s3.metric("Recovery Factor", f"{recovery_factor:.2f}", help="Net Profit / Max Drawdown")
+                s3.metric("Recovery Factor", f"{recovery_factor:.2f}")
                 s4.metric("Win Rate", f"{(t_df['P&L %'] > 0).mean()*100:.1f}%")
 
+                # --- Visuals ---
                 chart_col1, chart_col2 = st.columns(2)
                 with chart_col1:
                     st.write("### Exit Breakdown")
-                    st.pyplot(plt.subplots()[0].pie(t_df['Exit Reason'].value_counts(), labels=t_df['Exit Reason'].value_counts().index, autopct='%1.1f%%')[0].get_figure())
+                    exit_counts = t_df['Exit Reason'].value_counts()
+                    fig1, ax1 = plt.subplots()
+                    ax1.pie(exit_counts, labels=exit_counts.index, autopct='%1.1f%%', startangle=90, colors=['#ff9999','#66b3ff'])
+                    ax1.axis('equal')
+                    st.pyplot(fig1)
+                
                 with chart_col2:
-                    st.write("### Equity Curve")
+                    st.write("### Equity Curve (₹1L Start)")
                     st.line_chart(100000 * cum_strategy)
                 
+                st.write("### Detailed Trade Ledger")
                 st.dataframe(t_df)
             else:
-                st.warning("No institutional setups found. Try lowering the Volume Spike multiplier.")
+                st.warning("No institutional setups found with current filters.")
