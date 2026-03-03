@@ -5,3 +5,4 @@ pandas-ta
 plotly
 numpy
 requests
+matplotlib
