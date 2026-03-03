@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v6.1", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v6.2", layout="wide")
 
-st.title("🛡️ Pro-Tracer: 4D Global Optimizer (RSI + GMMA + TSL)")
+st.title("🛡️ Pro-Tracer: 4D Quant Optimizer (GMMA + RSI + RRR)")
 st.sidebar.header("Global Settings")
 
 ticker = st.sidebar.text_input("Ticker Symbol", "BRITANNIA.NS")
@@ -34,32 +34,22 @@ df_raw = get_data(ticker, start_date, end_date)
 if df_raw.empty:
     st.warning("Awaiting data...")
 else:
-    # --- MODULE 1: 4D OPTIMIZER (LENGTH, ENTRY, EXIT, TSL) ---
+    # --- MODULE 1: 4D OPTIMIZER (Now with RRR & Profit Factor) ---
     if mode == "Global 4D Optimizer":
-        st.header("🔬 4-Dimensional Strategic Optimizer")
-        st.info("Searching for the best combination of Momentum (RSI), Trend (GMMA), and Protection (TSL).")
-        
-        if st.button("🚀 Run 4D Deep Analysis"):
+        st.header("🔬 4D Strategic Quant Scan")
+        if st.button("🚀 Run 4D Performance Scan"):
             all_results = []
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
-            
-            # Constraints & Ranges
-            len_range = range(3, 253, 20)  # RSI Lengths
-            ent_range = range(50, 61, 5)   # Entry Levels
-            ext_range = range(40, 51, 5)   # Exit Levels
-            tsl_range = [5, 10, 15, 20]    # Trailing SL % options
-            
-            # GMMA Averages for Trend Filtering
             df['EMA_200'] = ta.ema(df['Close'], length=200)
             
-            valid_combos = []
-            for ent in ent_range:
-                for ext in ext_range:
-                    if ext < ent:
-                        for tsl in tsl_range:
-                            valid_combos.append((ent, ext, tsl))
+            # Constraints
+            len_range = range(3, 103, 20)  # RSI Lengths (Tightened for speed)
+            ent_range = range(50, 61, 5)   # Entry 
+            ext_range = range(40, 51, 5)   # Exit
+            tsl_range = [5, 10, 15]        # Trailing SL %
             
+            valid_combos = [(ent, ext, tsl) for ent in ent_range for ext in ext_range for tsl in tsl_range if ext < ent]
             total_combos = len(len_range) * len(valid_combos)
             progress_bar = st.progress(0)
             count = 0
@@ -67,55 +57,45 @@ else:
             for r_len in len_range:
                 rsi = ta.rsi(df['Close'], length=r_len)
                 if rsi is None: continue
-                
                 for ent, ext, tsl in valid_combos:
                     count += 1
                     progress_bar.progress(min(count / total_combos, 1.0))
                     
-                    in_pos, trade_results = False, []
-                    entry_p, highest_p = 0, 0
+                    in_pos, trade_pnls, entry_p, highest_p = False, [], 0, 0
                     
                     for j in range(1, len(df)):
-                        curr_rsi = rsi.iloc[j]
-                        prev_rsi = rsi.iloc[j-1]
-                        curr_c = float(df['Close'].iloc[j])
-                        
+                        curr_rsi, prev_rsi, curr_c = rsi.iloc[j], rsi.iloc[j-1], float(df['Close'].iloc[j])
                         if not in_pos:
-                            # Entry: RSI Cross + Price > 200 EMA
                             if curr_rsi > ent and prev_rsi <= ent and curr_c > df['EMA_200'].iloc[j]:
                                 in_pos, entry_p, highest_p = True, curr_c, curr_c
                         elif in_pos:
                             highest_p = max(highest_p, curr_c)
-                            tsl_hit = curr_c <= (highest_p * (1 - tsl / 100))
-                            rsi_exit = curr_rsi < ext
-                            
-                            if tsl_hit or rsi_exit:
+                            if curr_c <= (highest_p * (1 - tsl / 100)) or curr_rsi < ext:
                                 in_pos = False
-                                trade_results.append((curr_c - entry_p) / entry_p)
+                                trade_pnls.append((curr_c - entry_p) / entry_p)
                     
-                    if trade_results:
-                        roi = (np.prod([1 + r for r in trade_results]) - 1) * 100
-                        wins = [r for r in trade_results if r > 0]
-                        win_rate = (len(wins) / len(trade_results)) * 100
-                        
-                        # Max Drawdown Calculation for each combo
-                        daily_rets = pd.Series(0, index=df.index)
-                        # (Approximation for speed in optimizer)
-                        max_dd = -1 # Placeholder
+                    if trade_pnls:
+                        roi = (np.prod([1 + r for r in trade_pnls]) - 1) * 100
+                        wins = [r for r in trade_pnls if r > 0]
+                        losses = [r for r in trade_pnls if r <= 0]
+                        win_rate = (len(wins) / len(trade_pnls)) * 100
+                        avg_win = np.mean(wins) if wins else 0
+                        avg_loss = abs(np.mean(losses)) if losses else 0
+                        rrr = avg_win / avg_loss if avg_loss != 0 else np.inf
+                        profit_factor = sum(wins) / abs(sum(losses)) if losses else np.inf
                         
                         all_results.append({
                             'RSI_Len': r_len, 'Entry': ent, 'Exit': ext, 'TSL %': tsl,
                             'ROI %': round(roi, 2), 'Win Rate %': round(win_rate, 1),
-                            'Trades': len(trade_results)
+                            'Avg RRR': round(rrr, 2), 'Profit Factor': round(profit_factor, 2),
+                            'Trades': len(trade_pnls)
                         })
             
-            res_df = pd.DataFrame(all_results).sort_values('ROI %', ascending=False)
-            st.success("4D Scan Complete!")
-            st.dataframe(res_df, use_container_width=True)
+            st.dataframe(pd.DataFrame(all_results).sort_values('ROI %', ascending=False), use_container_width=True)
 
-    # --- MODULE 2: TRADE DETAILER (WITH RVOL, GMMA & TSL) ---
+    # --- MODULE 2: TRADE DETAILER (RE-INTEGRATED RRR & PROFIT FACTOR) ---
     elif mode == "Trade Detailer":
-        st.header("📜 Full Institutional Audit")
+        st.header("📜 Full Quant Audit")
         c1, c2, c3, c4, c5 = st.columns(5)
         in_rsi = c1.number_input("RSI Length", value=13)
         in_ent = c2.slider("RSI Entry", 50, 65, 55)
@@ -123,60 +103,42 @@ else:
         tsl_val = c4.number_input("Trailing SL %", value=10.0)
         rvol_val = c5.number_input("Min RVOL (x)", value=1.2)
         
-        if st.button("📊 Generate Comprehensive Report"):
+        if st.button("📊 Generate Complete Report"):
             df = df_raw.copy()
             df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
             df['Vol_MA'] = df['Volume'].rolling(window=20).mean()
             df['RVOL'] = df['Volume'] / df['Vol_MA']
+            df['ST_Avg'] = df['Close'].rolling(window=8).mean() # Guppy ST Group Proxy
+            df['LT_Avg'] = df['Close'].rolling(window=45).mean() # Guppy LT Group Proxy
             df['EMA_200'] = ta.ema(df['Close'], length=200)
-            
-            # GMMA Short-Term Avg (3,5,8,10,12,15)
-            df['ST_Avg'] = df['Close'].rolling(window=3).mean() # Simplified for code flow
-            # GMMA Long-Term Avg (30,35,40,45,50,60)
-            df['LT_Avg'] = df['Close'].rolling(window=30).mean() 
 
             trades, in_trade, highest_p = [], False, 0
-            
             for i in range(1, len(df)):
-                curr_p = float(df['Close'].iloc[i])
-                rsi_v = df['RSI'].iloc[i]
-                prev_rsi = df['RSI'].iloc[i-1]
-                
+                curr_p, rsi_v, prev_rsi = float(df['Close'].iloc[i]), df['RSI'].iloc[i], df['RSI'].iloc[i-1]
                 if not in_trade:
-                    # Entry: RSI Cross + GMMA Trend + RVOL + Above 200 EMA
                     if rsi_v > in_ent and prev_rsi <= in_ent and df['ST_Avg'].iloc[i] > df['LT_Avg'].iloc[i] and df['RVOL'].iloc[i] >= rvol_val and curr_p > df['EMA_200'].iloc[i]:
                         in_trade, entry_date, entry_price = True, df.index[i], curr_p
                         highest_p = curr_p
-                
                 elif in_trade:
                     highest_p = max(highest_p, curr_p)
-                    tsl_trigger = curr_p <= (highest_p * (1 - tsl_val / 100))
-                    rsi_exit = rsi_v < in_ext
-                    
-                    if tsl_trigger or rsi_exit:
+                    if curr_p <= (highest_p * (1 - tsl_val / 100)) or rsi_v < in_ext:
                         in_trade = False
                         pnl = ((curr_p - entry_price) / entry_price) * 100
-                        trades.append({
-                            "Entry": entry_date.date(), "Exit": df.index[i].date(), 
-                            "Entry P": round(entry_price, 2), "Exit P": round(curr_p, 2), 
-                            "P&L %": round(pnl, 2), "Reason": "TSL" if tsl_trigger else "RSI"
-                        })
+                        trades.append({"Entry": entry_date.date(), "Exit": df.index[i].date(), "Entry P": round(entry_price, 2), "Exit P": round(curr_p, 2), "P&L %": round(pnl, 2), "Reason": "TSL" if curr_p <= (highest_p * (1 - tsl_val / 100)) else "RSI"})
 
             if trades:
                 t_df = pd.DataFrame(trades)
-                st.subheader("📊 Performance Scorecard")
+                wins = t_df[t_df['P&L %'] > 0]['P&L %']
+                losses = t_df[t_df['P&L %'] <= 0]['P&L %']
+                rrr = wins.mean() / abs(losses.mean()) if not losses.empty else np.inf
+                pf = wins.sum() / abs(losses.sum()) if not losses.empty else np.inf
                 
-                daily_rets = pd.Series(0.0, index=df.index)
-                for _, row in t_df.iterrows(): daily_rets.loc[pd.to_datetime(row['Exit'])] = row['P&L %'] / 100
-                cum_strategy = (1 + daily_rets).cumprod()
-                
-                s1, s2, s3, s4 = st.columns(4)
-                s1.metric("Final ROI", f"{(cum_strategy.iloc[-1]-1)*100:.1f}%")
-                s2.metric("Win Rate", f"{(len(t_df[t_df['P&L %'] > 0])/len(t_df))*100:.1f}%")
-                s3.metric("TSL Exits", len(t_df[t_df['Reason'] == "TSL"]))
+                s1, s2, s3, s4, s5 = st.columns(5)
+                s1.metric("Win Rate", f"{(len(wins)/len(t_df))*100:.1f}%")
+                s2.metric("Avg RRR", f"{rrr:.2f}:1")
+                s3.metric("Profit Factor", f"{pf:.2f}")
                 s4.metric("Trades", len(t_df))
+                s5.metric("Avg P&L %", f"{t_df['P&L %'].mean():.2f}%")
                 
-                st.line_chart(100000 * cum_strategy)
+                st.line_chart((1 + t_df['P&L %']/100).cumprod())
                 st.dataframe(t_df, use_container_width=True)
-            else:
-                st.warning("No trades met the 4D criteria. Try adjusting thresholds.")
