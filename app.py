@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v2.5", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v2.6", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Trend-Filtered Quant Engine")
+st.title("🛡️ Pro-Tracer: Quant Engine & Drawdown Tracker")
 st.sidebar.header("Global Settings")
 
 # --- Global Inputs ---
@@ -43,14 +43,10 @@ else:
             results = []
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
-            
-            # Step 10 for speed
             rsi_range = range(3, 253, 10) 
             ema_range = range(3, 51, 5)
-            
             progress_bar = st.progress(0)
             total_steps = len(rsi_range)
-
             for i, r_len in enumerate(rsi_range):
                 progress_bar.progress(i / total_steps)
                 rsi_series = ta.rsi(df['Close'], length=r_len)
@@ -59,22 +55,15 @@ else:
                     signal = (rsi_series > rsi_ema).astype(int)
                     strat_ret = (df['Market_Ret'] * signal.shift(1)).fillna(0)
                     cum_ret = (1 + strat_ret).cumprod()
-                    
                     total_return = cum_ret.iloc[-1] - 1
                     max_dd = ((cum_ret - cum_ret.cummax()) / cum_ret.cummax()).min()
-                    
-                    results.append({
-                        'RSI_Len': r_len, 'EMA_Len': e_len,
-                        'ROI %': round(total_return * 100, 2),
-                        'Max_DD %': round(max_dd * 100, 2),
-                        'Risk_Score': round(abs(total_return / max_dd), 2) if max_dd != 0 else 0
-                    })
+                    results.append({'RSI_Len': r_len, 'EMA_Len': e_len, 'ROI %': round(total_return * 100, 2), 'Max_DD %': round(max_dd * 100, 2)})
             st.success("Optimization Complete!")
             st.dataframe(pd.DataFrame(results).sort_values('ROI %', ascending=False).head(20))
 
     # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
-        st.header("📜 Trade Detailer & Advanced Scorecard")
+        st.header("📜 Trade Detailer & Crash Analysis")
         col1, col2, col3, col4 = st.columns(4)
         in_rsi = col1.number_input("RSI Look-back", value=14, min_value=3)
         in_ema = col2.number_input("EMA (Avg Line) Length", value=9, min_value=3)
@@ -85,73 +74,84 @@ else:
             df = df_raw.copy()
             df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
             df['RSI_EMA'] = ta.ema(df['RSI'], length=in_ema)
-            
-            # Trend Filter Calculation
             if trend_ema_len > 0:
                 df['Trend_EMA'] = ta.ema(df['Close'], length=trend_ema_len)
             
             trades = []
             in_trade = False
             entry_price = 0
-
             for i in range(1, len(df)):
                 current_price = float(df['Close'].iloc[i])
                 rsi_val = df['RSI'].iloc[i]
                 ema_val = df['RSI_EMA'].iloc[i]
-                
-                # Check Trend Condition
-                if trend_ema_len > 0:
-                    trend_ok = current_price > df['Trend_EMA'].iloc[i]
-                else:
-                    trend_ok = True
+                trend_ok = current_price > df['Trend_EMA'].iloc[i] if trend_ema_len > 0 else True
 
-                # ENTRY: RSI Cross UP + Price > Trend EMA
                 if not in_trade:
                     if rsi_val > ema_val and df['RSI'].iloc[i-1] <= df['RSI_EMA'].iloc[i-1] and trend_ok:
                         in_trade, entry_date, entry_price = True, df.index[i], current_price
-                
-                # EXIT: Either RSI crosses below EMA OR Stop Loss is hit
                 elif in_trade:
-                    sl_triggered = stop_loss_pct > 0 and current_price <= entry_price * (1 - stop_loss_pct/100)
-                    rsi_cross = rsi_val < ema_val
-                    
-                    if sl_triggered or rsi_cross:
+                    sl_hit = stop_loss_pct > 0 and current_price <= entry_price * (1 - stop_loss_pct/100)
+                    rsi_exit = rsi_val < ema_val
+                    if sl_hit or rsi_exit:
                         in_trade = False
-                        exit_price = entry_price * (1 - stop_loss_pct/100) if sl_triggered else current_price
-                        reason = "Stop Loss" if sl_triggered else "RSI Crossover"
+                        exit_price = entry_price * (1 - stop_loss_pct/100) if sl_hit else current_price
+                        reason = "Stop Loss" if sl_hit else "RSI Crossover"
                         pnl = ((exit_price - entry_price) / entry_price) * 100
                         trades.append({
-                            "Entry Date": entry_date.date(), "Exit Date": df.index[i].date(), 
-                            "Entry Price": round(entry_price, 2), "Exit Price": round(exit_price, 2), 
-                            "P&L %": round(pnl, 2), "Exit Reason": reason
+                            "Entry Date": entry_date.date(), 
+                            "Exit Date": df.index[i].date(), 
+                            "Entry Price": round(entry_price, 2),
+                            "Exit Price": round(exit_price, 2),
+                            "P&L %": round(pnl, 2), 
+                            "Exit Reason": reason
                         })
 
             if trades:
                 t_df = pd.DataFrame(trades)
                 
-                # --- Metrics ---
-                t_df['IsWin'] = t_df['P&L %'] > 0
-                runs = t_df['IsWin'].groupby((t_df['IsWin'] != t_df['IsWin'].shift()).cumsum()).cumcount() + 1
-                max_cons_losses = runs[t_df['IsWin'] == False].max() if not t_df[t_df['IsWin'] == False].empty else 0
+                # --- DRAWDOWN TIME ANALYSIS ---
+                daily_rets = pd.Series(0.0, index=df.index)
+                for _, row in t_df.iterrows():
+                    daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
+                cum_strategy = (1 + daily_rets).cumprod()
                 
-                total_ret_val = (1 + t_df['P&L %']/100).prod() - 1
+                running_max = cum_strategy.cummax()
+                drawdowns = (cum_strategy - running_max) / running_max
+                max_dd_val = drawdowns.min()
+                
+                end_date_dd = drawdowns.idxmin()
+                start_date_dd = cum_strategy[:end_date_dd].idxmax()
+                dd_duration = (end_date_dd - start_date_dd).days
+
+                # --- 1. Drawdown Timing Section ---
+                st.subheader("⚠️ Max Drawdown Timing (The Worst Crash)")
+                d1, d2, d3 = st.columns(3)
+                d1.metric("Peak Date", start_date_dd.strftime('%d %b %Y'))
+                d2.metric("Bottom Date", end_date_dd.strftime('%d %b %Y'))
+                d3.metric("Crash Duration", f"{dd_duration} Days")
+                st.error(f"The strategy fell **{max_dd_val*100:.2f}%** between {start_date_dd.date()} and {end_date_dd.date()}.")
+
+                # --- 2. Full Quant Scorecard ---
+                st.write("---")
+                st.subheader("📊 Full Quant Scorecard")
+                
+                total_ret_val = cum_strategy.iloc[-1] - 1
                 num_years = max((df.index[-1] - df.index[0]).days / 365.25, 0.1)
                 cagr = ((1 + total_ret_val)**(1/num_years) - 1) if total_ret_val > -1 else -1
-                
-                daily_log_ret = pd.Series(0.0, index=df.index)
-                for _, row in t_df.iterrows():
-                    daily_log_ret.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
-                cum_strategy = (1 + daily_log_ret).cumprod()
-                max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
                 
                 win_rate = (t_df['P&L %'] > 0).mean()
                 avg_win = t_df[t_df['P&L %'] > 0]['P&L %'].mean() if not t_df[t_df['P&L %'] > 0].empty else 0
                 avg_loss = abs(t_df[t_df['P&L %'] < 0]['P&L %'].mean()) if not t_df[t_df['P&L %'] < 0].empty else 0
                 expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
-                profit_factor = (t_df[t_df['P&L %'] > 0]['P&L %'].sum()) / abs(t_df[t_df['P&L %'] < 0]['P&L %'].sum()) if abs(t_df[t_df['P&L %'] < 0]['P&L %'].sum()) != 0 else np.inf
+                
+                sum_gains = t_df[t_df['P&L %'] > 0]['P&L %'].sum()
+                sum_losses = abs(t_df[t_df['P&L %'] < 0]['P&L %'].sum())
+                profit_factor = sum_gains / sum_losses if sum_losses != 0 else np.inf
+                
+                t_df['IsWin'] = t_df['P&L %'] > 0
+                runs = t_df['IsWin'].groupby((t_df['IsWin'] != t_df['IsWin'].shift()).cumsum()).cumcount() + 1
+                max_cons_losses = runs[t_df['IsWin'] == False].max() if not t_df[t_df['IsWin'] == False].empty else 0
 
-                # --- Display ---
-                st.subheader("📊 Pro-Tracer Quant Scorecard")
                 s1, s2, s3, s4 = st.columns(4)
                 s1.metric("Total Return", f"{total_ret_val*100:.2f}%")
                 s2.metric("CAGR", f"{cagr*100:.2f}%")
@@ -164,6 +164,7 @@ else:
                 s7.metric("Max Cons. Losses", f"{int(max_cons_losses)}")
                 s8.metric("Num Trades", len(t_df))
 
+                # --- 3. Visual Analysis ---
                 chart_col1, chart_col2 = st.columns(2)
                 with chart_col1:
                     st.write("### Exit Reason Breakdown")
@@ -172,10 +173,13 @@ else:
                     ax.pie(exit_counts, labels=exit_counts.index, autopct='%1.1f%%', startangle=90, colors=['#ff9999','#66b3ff'])
                     st.pyplot(fig)
                 with chart_col2:
-                    st.write("### P&L % per Trade")
+                    st.write("### P&L Distribution")
                     st.bar_chart(t_df['P&L %'])
 
                 st.subheader("💰 Compounding Chart (Starting ₹1,00,000)")
                 st.line_chart(100000 * cum_strategy)
+                
                 st.write("### Detailed Trade Ledger")
                 st.dataframe(t_df)
+            else:
+                st.warning("No trades found.")
