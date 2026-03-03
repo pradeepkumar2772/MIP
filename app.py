@@ -1,34 +1,47 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
 
-# =============================
-# CONFIGURATION
-# =============================
-symbol = "AAPL"
-start_date = "2015-01-01"
-end_date = "2024-01-01"
+st.set_page_config(layout="wide")
 
-transaction_cost = 0.0005   # 0.05%
-slippage = 0.0005           # 0.05%
+st.title("📊 Institutional RSI Research")
+
+# =============================
+# USER INPUT
+# =============================
+symbol = st.text_input("Stock Symbol", "AAPL")
+start_date = st.date_input("Start Date", pd.to_datetime("2015-01-01"))
+end_date = st.date_input("End Date", pd.to_datetime("2024-01-01"))
+
+transaction_cost = 0.0005
+slippage = 0.0005
 
 # =============================
 # DOWNLOAD DATA
 # =============================
-df = yf.download(symbol, start=start_date, end=end_date)
+@st.cache_data
+def load_data(symbol, start, end):
+    df = yf.download(symbol, start=start, end=end)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
 
-# Fix possible MultiIndex columns
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.get_level_values(0)
+df = load_data(symbol, start_date, end_date)
+
+if df.empty:
+    st.error("❌ Data download failed. Possibly internet blocked.")
+    st.stop()
 
 df = df[['Close']].dropna()
 
+st.write("Data Loaded:", df.shape)
+
 # =============================
-# RSI FUNCTION (Wilder / RMA)
+# RSI FUNCTION
 # =============================
 def compute_rsi(price, period):
     delta = price.diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -37,31 +50,26 @@ def compute_rsi(price, period):
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-
     return rsi
-
 
 # =============================
 # PERFORMANCE METRICS
 # =============================
 def performance_metrics(returns):
-
     returns = returns.dropna()
 
     if len(returns) < 50:
         return None
 
     equity = (1 + returns).cumprod()
-
     years = len(returns) / 252
-    cagr = equity.iloc[-1]**(1/years) - 1 if years > 0 else 0
 
+    cagr = equity.iloc[-1]**(1/years) - 1 if years > 0 else 0
     drawdown = equity / equity.cummax() - 1
     max_dd = drawdown.min()
 
-    if returns.std() == 0:
-        sharpe = 0
-    else:
+    sharpe = 0
+    if returns.std() != 0:
         sharpe = np.sqrt(252) * returns.mean() / returns.std()
 
     return {
@@ -70,7 +78,6 @@ def performance_metrics(returns):
         "MaxDD": max_dd
     }
 
-
 # =============================
 # BACKTEST FUNCTION
 # =============================
@@ -78,40 +85,32 @@ def backtest(data, rsi_period):
 
     df = data.copy()
 
-    # Indicators
     df["RSI"] = compute_rsi(df["Close"], rsi_period)
     df["RSI_MA_9"] = df["RSI"].rolling(9).mean()
-    df["RSI_MA_21"] = df["RSI"].rolling(21).mean()
 
-    # Entry: RSI crosses above MA9
+    # Entry
     entry = (
         (df["RSI"] > df["RSI_MA_9"]) &
         (df["RSI"].shift(1) <= df["RSI_MA_9"].shift(1))
     )
 
-    # Exit: RSI crosses below MA9
+    # Exit
     exit = (
         (df["RSI"] < df["RSI_MA_9"]) &
         (df["RSI"].shift(1) >= df["RSI_MA_9"].shift(1))
     )
 
-    # Signal column
     df["signal"] = np.nan
     df.loc[entry, "signal"] = 1
     df.loc[exit, "signal"] = 0
 
-    # Forward fill positions (NO deprecated replace)
     df["position"] = df["signal"].ffill().fillna(0)
 
-    # Market returns
     df["returns"] = df["Close"].pct_change()
 
-    # Trade detection
     trades = df["position"].diff().abs()
-
     cost = trades * (transaction_cost + slippage)
 
-    # Strategy returns
     df["strategy_returns"] = (
         df["position"].shift(1) * df["returns"]
         - cost
@@ -121,37 +120,45 @@ def backtest(data, rsi_period):
 
 
 # =============================
-# TRAIN / TEST SPLIT
+# OPTIMIZATION
 # =============================
-split = int(len(df) * 0.7)
+if st.button("Run Optimization"):
 
-train = df.iloc[:split]
-test = df.iloc[split:]
+    split = int(len(df) * 0.7)
+    train = df.iloc[:split]
+    test = df.iloc[split:]
 
-results = []
+    results = []
 
-for period in range(3, 253):
+    with st.spinner("Running RSI optimization..."):
+        for period in range(3, 253):
 
-    train_metrics = backtest(train, period)
-    test_metrics = backtest(test, period)
+            train_metrics = backtest(train, period)
+            test_metrics = backtest(test, period)
 
-    if train_metrics is None or test_metrics is None:
-        continue
+            if train_metrics is None or test_metrics is None:
+                continue
 
-    results.append([
-        period,
-        train_metrics["Sharpe"],
-        test_metrics["Sharpe"],
-        test_metrics["CAGR"],
-        test_metrics["MaxDD"]
-    ])
+            results.append([
+                period,
+                train_metrics["Sharpe"],
+                test_metrics["Sharpe"],
+                test_metrics["CAGR"],
+                test_metrics["MaxDD"]
+            ])
 
-results_df = pd.DataFrame(
-    results,
-    columns=["RSI_Period", "Train_Sharpe", "Test_Sharpe", "Test_CAGR", "Test_MaxDD"]
-)
+    if len(results) == 0:
+        st.error("No valid results generated.")
+        st.stop()
 
-results_df = results_df.sort_values("Test_Sharpe", ascending=False)
+    results_df = pd.DataFrame(
+        results,
+        columns=["RSI_Period", "Train_Sharpe", "Test_Sharpe", "Test_CAGR", "Test_MaxDD"]
+    )
 
-print("\nTop 10 RSI Periods (Out-of-Sample Ranked):\n")
-print(results_df.head(10))
+    results_df = results_df.sort_values("Test_Sharpe", ascending=False)
+
+    st.subheader("Top 10 RSI Periods (Out-of-Sample)")
+    st.dataframe(results_df.head(10))
+
+    st.success("Optimization Complete ✅")
