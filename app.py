@@ -1,56 +1,61 @@
-import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
-import matplotlib.pyplot as plt
+import streamlit as st
 
-# 1. Streamlit UI
-st.title("Pro-Tracer: RSI Backtest")
-ticker = st.text_input("Enter Ticker (e.g., RELIANCE.NS)", value="RELIANCE.NS")
+# 1. Setup & Data
+ticker = "RELIANCE.NS"
+data = yf.download(ticker, start="2022-01-01")
 
-# 2. Data Download
-data = yf.download(ticker, start="2020-01-01")
+# 2. Calculate Turtle Parameters
+# System 1
+data['S1_High'] = data['High'].rolling(window=20).max().shift(1)
+data['S1_Low'] = data['Low'].rolling(window=10).min().shift(1)
+# System 2
+data['S2_High'] = data['High'].rolling(window=55).max().shift(1)
+data['S2_Low'] = data['Low'].rolling(window=20).min().shift(1)
+# Risk Management (ATR)
+data['ATR'] = ta.atr(data['High'], data['Low'], data['Close'], length=20)
 
-if not data.empty:
-    # 3. RSI Calculation
-    data['RSI'] = ta.rsi(data['Close'], length=14)
+# 3. Simulation Variables
+balance = 1000000  # ₹10 Lakhs
+risk_pct = 0.02    # 2% Risk
+position = 0
+entry_price = 0
+last_trade_won = False
+equity_curve = []
 
-    # 4. Strategy Logic
-    data['Signal'] = 0
-    data.loc[data['RSI'] > 50, 'Signal'] = 1
-    data.loc[data['RSI'] < 40, 'Signal'] = 0
+# 4. The Turtle Loop
+for i in range(len(data)):
+    row = data.iloc[i]
+    current_close = row['Close']
+    
+    if position == 0:  # Looking for Entry
+        # Entry Logic for System 1 (with winner filter)
+        if not last_trade_won and row['High'] > row['S1_High']:
+            # Calculate Unit Size
+            stop_dist = 2 * row['ATR']
+            unit_size = (balance * risk_pct) // stop_dist
+            position = unit_size
+            entry_price = row['S1_High']
+            
+        # Entry Logic for System 2 (Backup if S1 was skipped)
+        elif row['High'] > row['S2_High']:
+            stop_dist = 2 * row['ATR']
+            unit_size = (balance * risk_pct) // stop_dist
+            position = unit_size
+            entry_price = row['S2_High']
+            
+    elif position > 0:  # Looking for Exit (Long)
+        # Exit if price hits 10-day low (S1) or 2-ATR Stop Loss
+        stop_loss = entry_price - (2 * row['ATR'])
+        if row['Low'] < row['S1_Low'] or row['Low'] < stop_loss:
+            exit_price = min(row['S1_Low'], stop_loss)
+            pnl = (exit_price - entry_price) * position
+            balance += pnl
+            last_trade_won = pnl > 0
+            position = 0
+            
+    equity_curve.append(balance)
 
-    # 5. Returns Calculation
-    data['Market_Return'] = data['Close'].pct_change()
-    data['Strategy_Return'] = data['Market_Return'] * data['Signal'].shift(1)
-    data['Cumulative_Strategy'] = (1 + data['Strategy_Return']).fillna(0).cumprod()
-    data['Cumulative_Market'] = (1 + data['Market_Return']).fillna(0).cumprod()
-
-    # 6. Plotting (The Streamlit Way)
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), gridspec_kw={'height_ratios': [2, 1]})
-
-    # Top Plot: Performance
-    ax1.plot(data['Cumulative_Strategy'], label='RSI Strategy', color='green')
-    ax1.plot(data['Cumulative_Market'], label='Buy & Hold', color='gray', alpha=0.5)
-    ax1.set_title(f"Equity Curve: {ticker}")
-    ax1.legend()
-    ax1.grid(True)
-
-    # Bottom Plot: RSI
-    ax2.plot(data['RSI'], color='purple')
-    ax2.axhline(50, color='black', linestyle='--', alpha=0.5)
-    ax2.axhline(70, color='red', linestyle=':', alpha=0.3)
-    ax2.axhline(30, color='blue', linestyle=':', alpha=0.3)
-    ax2.set_title("RSI Oscillator")
-    ax2.grid(True)
-
-    plt.tight_layout()
-
-    # INSTEAD OF plt.show(), use st.pyplot()
-    st.pyplot(fig)
-
-    # 7. Metrics
-    total_ret = (data['Cumulative_Strategy'].iloc[-1] - 1) * 100
-    st.metric("Total Strategy Return", f"{total_ret:.2f}%")
-else:
-    st.error("No data found for this ticker.")
+data['Equity'] = equity_curve
