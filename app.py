@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v3.3", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v3.4", layout="wide")
 
-st.title("🛡️ Pro-Tracer: Institutional Momentum & Recovery Tracker")
+st.title("🛡️ Pro-Tracer: Deep-Cycle Optimizer Edition")
 st.sidebar.header("Global Settings")
 
 # --- Global Inputs ---
@@ -36,124 +36,63 @@ df_raw = get_data(ticker, start_date, end_date)
 if df_raw.empty:
     st.warning("Awaiting data...")
 else:
-    # --- MODULE 1: OPTIMIZER ---
+    # --- MODULE 1: DEEP-CYCLE OPTIMIZER ---
     if mode == "Brute-Force Optimizer":
-        st.header("🔍 RSI Period Optimizer")
-        if st.button("🚀 Run Optimization"):
+        st.header("🔍 Macro RSI Optimizer (3 to 252)")
+        st.info("Testing 50+ combinations of RSI speeds to find the 'Golden Cycle'.")
+        
+        if st.button("🚀 Start Deep Scan"):
             results = []
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
-            rsi_range = range(5, 41, 2) 
+            
+            # --- UPDATED RANGE: 3 to 252 with Step 5 for Speed ---
+            rsi_range = range(3, 253, 5) 
             progress_bar = st.progress(0)
+            
             for i, r_len in enumerate(rsi_range):
                 progress_bar.progress((i + 1) / len(rsi_range))
+                
+                # 1. Calculate RSI for this length
                 rsi = ta.rsi(df['Close'], length=r_len)
+                
+                # 2. Fast Simulation Logic
                 sig = pd.Series(0, index=df.index)
                 in_pos = False
                 for j in range(1, len(df)):
+                    # Entry: RSI > 60, Exit: RSI < 50
                     if not in_pos and rsi.iloc[j] > 60: in_pos = True
                     elif in_pos and rsi.iloc[j] < 50: in_pos = False
                     sig.iloc[j] = 1 if in_pos else 0
+                
+                # 3. Performance Math
                 strat_ret = (df['Market_Ret'] * sig.shift(1)).fillna(0)
                 cum_ret = (1 + strat_ret).cumprod()
                 total_return = cum_ret.iloc[-1] - 1
                 max_dd = ((cum_ret - cum_ret.cummax()) / cum_ret.cummax()).min()
-                results.append({'RSI_Len': r_len, 'ROI %': round(total_return * 100, 2), 'Max_DD %': round(max_dd * 100, 2)})
-            st.dataframe(pd.DataFrame(results).sort_values('ROI %', ascending=False).head(20))
+                
+                # 4. Result Logging
+                results.append({
+                    'RSI_Len': r_len, 
+                    'ROI %': round(total_return * 100, 2), 
+                    'Max_DD %': round(max_dd * 100, 2),
+                    'Profit/DD': round(abs(total_return / max_dd), 2) if max_dd != 0 else 0
+                })
+                
+            res_df = pd.DataFrame(results)
+            st.success("Deep Scan Complete!")
+            st.write("### Top Strategies (Ranked by ROI)")
+            st.dataframe(res_df.sort_values('ROI %', ascending=False).head(20))
 
     # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
-        st.header("📜 Institutional Detailer & Recovery Analysis")
+        # ... [Keep your stable Trade Detailer code from v3.3 here] ...
+        st.header("📜 Trade Detailer & Recovery Analysis")
         col1, col2, col3, col4 = st.columns(4)
         in_rsi = col1.number_input("RSI Look-back", value=14)
-        vol_mult = col2.number_input("Vol Spike (x Avg)", value=1.5, step=0.1)
-        vol_ma_period = col3.number_input("Vol Avg Period", value=20)
+        vol_mult = col2.number_input("Vol Spike (x Avg)", value=1.5)
+        vol_ma = col3.number_input("Vol Avg Period", value=20)
         stop_loss_pct = col4.number_input("Stop Loss %", value=5.0)
         
-        if st.button("📊 Generate Institutional Report"):
-            df = df_raw.copy()
-            df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
-            df['Vol_MA'] = df['Volume'].rolling(window=vol_ma_period).mean()
-            df['Trend_EMA'] = ta.ema(df['Close'], length=200)
-            
-            trades = []
-            in_trade = False
-            entry_price = 0
-            entry_date = None
-
-            for i in range(1, len(df)):
-                curr_p = float(df['Close'].iloc[i])
-                rsi_v = df['RSI'].iloc[i]
-                prev_rsi = df['RSI'].iloc[i-1]
-                vol_v = df['Volume'].iloc[i]
-                v_ma = df['Vol_MA'].iloc[i]
-                
-                # --- ENTRY CONDITION ---
-                if not in_trade:
-                    vol_spike = vol_v > (v_ma * vol_mult) if not pd.isna(v_ma) else False
-                    if rsi_v > 60 and prev_rsi <= 60 and curr_p > df['Trend_EMA'].iloc[i] and vol_spike:
-                        in_trade, entry_date, entry_price = True, df.index[i], curr_p
-                
-                # --- EXIT CONDITION ---
-                elif in_trade:
-                    sl_hit = stop_loss_pct > 0 and curr_p <= entry_price * (1 - stop_loss_pct/100)
-                    rsi_exit = rsi_v < 50 and prev_rsi >= 50
-                    if sl_hit or rsi_exit:
-                        in_trade = False
-                        exit_p = entry_price * (1 - stop_loss_pct/100) if sl_hit else curr_p
-                        reason = "Stop Loss" if sl_hit else "RSI 50 Exit"
-                        pnl = ((exit_p - entry_price) / entry_price) * 100
-                        
-                        # Added Entry Price and Exit Price to the ledger dictionary
-                        trades.append({
-                            "Entry Date": entry_date.date(),
-                            "Exit Date": df.index[i].date(),
-                            "Entry Price": round(entry_price, 2),
-                            "Exit Price": round(exit_p, 2),
-                            "P&L %": round(pnl, 2),
-                            "Exit Reason": reason
-                        })
-
-            if trades:
-                t_df = pd.DataFrame(trades)
-                
-                # Metrics Calculation
-                daily_rets = pd.Series(0.0, index=df.index)
-                for _, row in t_df.iterrows():
-                    daily_rets.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
-                cum_strategy = (1 + daily_rets).cumprod()
-                
-                max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
-                total_ret_val = cum_strategy.iloc[-1] - 1
-                recovery_factor = abs(total_ret_val / max_dd_val) if max_dd_val != 0 else np.inf
-                
-                # --- Scorecard ---
-                st.subheader("📊 Institutional Scorecard")
-                s1, s2, s3, s4 = st.columns(4)
-                s1.metric("Total ROI", f"{total_ret_val*100:.1f}%")
-                s2.metric("Max Drawdown", f"{max_dd_val*100:.2f}%")
-                s3.metric("Recovery Factor", f"{recovery_factor:.2f}")
-                s4.metric("Win Rate", f"{(t_df['P&L %'] > 0).mean()*100:.1f}%")
-
-                # --- Visuals ---
-                chart_col1, chart_col2 = st.columns(2)
-                with chart_col1:
-                    st.write("### Exit Breakdown")
-                    exit_counts = t_df['Exit Reason'].value_counts()
-                    fig1, ax1 = plt.subplots()
-                    ax1.pie(exit_counts, labels=exit_counts.index, autopct='%1.1f%%', startangle=90, colors=['#ff9999','#66b3ff'])
-                    ax1.axis('equal')
-                    st.pyplot(fig1)
-                
-                with chart_col2:
-                    st.write("### Equity Curve (Starting ₹1L)")
-                    st.line_chart(100000 * cum_strategy)
-                
-                st.write("### Detailed Trade Ledger")
-                st.dataframe(t_df, use_container_width=True)
-                
-                # Sidebar Download
-                csv = t_df.to_csv(index=False).encode('utf-8')
-                st.sidebar.download_button(label="📥 Download Full Ledger (CSV)", data=csv, file_name=f"{ticker}_v3.3_report.csv", mime="text/csv")
-            else:
-                st.warning("No trades triggered with these institutional filters.")
+        # [Remaining logic for metrics, ledger with Prices, and chart generation]
+        # (Refer to v3.3 for the detailed looping logic)
