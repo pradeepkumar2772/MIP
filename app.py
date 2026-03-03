@@ -7,9 +7,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v2.3", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v2.4", layout="wide")
 
-st.title("🛡️ Pro-Tracer: The Ultimate Quantitative Engine")
+st.title("🛡️ Pro-Tracer: The Quantitative Engine")
 st.sidebar.header("Global Settings")
 
 # --- Global Inputs ---
@@ -17,7 +17,6 @@ ticker = st.sidebar.text_input("Ticker Symbol", "RELIANCE.NS")
 start_date = st.sidebar.date_input("Start Date", datetime.date(1990, 1, 1), min_value=datetime.date(1990, 1, 1))
 end_date = st.sidebar.date_input("End Date", datetime.date.today())
 
-# Module Navigation
 mode = st.sidebar.radio("Select Module", ["Brute-Force Optimizer", "Trade Detailer"])
 
 @st.cache_data
@@ -115,12 +114,16 @@ else:
             if trades:
                 t_df = pd.DataFrame(trades)
                 
+                # --- Max Consecutive Losses Logic ---
+                t_df['IsWin'] = t_df['P&L %'] > 0
+                runs = t_df['IsWin'].groupby((t_df['IsWin'] != t_df['IsWin'].shift()).cumsum()).cumcount() + 1
+                max_cons_losses = runs[t_df['IsWin'] == False].max() if not t_df[t_df['IsWin'] == False].empty else 0
+
                 # --- 1. Quant Scorecard Calculations ---
                 total_ret_val = (1 + t_df['P&L %']/100).prod() - 1
                 num_years = max((df.index[-1] - df.index[0]).days / 365.25, 0.1)
                 cagr = ((1 + total_ret_val)**(1/num_years) - 1) if total_ret_val > -1 else -1
                 
-                # Equity Curve for Max DD
                 daily_log_ret = pd.Series(0.0, index=df.index)
                 for _, row in t_df.iterrows():
                     daily_log_ret.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
@@ -147,10 +150,10 @@ else:
                 s5, s6, s7, s8 = st.columns(4)
                 s5.metric("Win Rate", f"{win_rate*100:.1f}%")
                 s6.metric("Profit Factor", f"{profit_factor:.2f}")
-                s7.metric("Avg Trade %", f"{t_df['P&L %'].mean():.2f}%")
+                s7.metric("Max Cons. Losses", f"{int(max_cons_losses)}")
                 s8.metric("Num Trades", len(t_df))
 
-                # --- 3. Visual Analysis (Pie Chart & P&L) ---
+                # --- 3. Visual Analysis ---
                 st.write("---")
                 chart_col1, chart_col2 = st.columns(2)
                 with chart_col1:
@@ -165,10 +168,8 @@ else:
                     st.bar_chart(t_df['P&L %'])
 
                 # --- 4. Compounding Chart ---
-                st.subheader("💰 The Power of Compounding (Starting ₹1,00,000)")
-                initial_capital = 100000
-                st.write(f"Final Value: **₹{initial_capital * (1 + total_ret_val):,.2f}**")
-                st.line_chart(initial_capital * cum_strategy)
+                st.subheader("💰 Compounding Curve (Starting ₹1,00,000)")
+                st.line_chart(100000 * cum_strategy)
 
                 st.write("### Detailed Trade Ledger")
                 st.dataframe(t_df)

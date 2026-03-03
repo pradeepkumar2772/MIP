@@ -4,11 +4,12 @@ import pandas_ta as ta
 import streamlit as st
 import datetime
 import numpy as np
+import matplotlib.pyplot as plt
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v2.0", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v2.3", layout="wide")
 
-st.title("🛡️ Pro-Tracer: The Quantitative Engine")
+st.title("🛡️ Pro-Tracer: The Ultimate Quantitative Engine")
 st.sidebar.header("Global Settings")
 
 # --- Global Inputs ---
@@ -24,7 +25,6 @@ def get_data(symbol, start, end):
     try:
         data = yf.download(symbol, start=start, end=end)
         if not data.empty:
-            # Handle potential MultiIndex columns from newer yfinance versions
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
             return data
@@ -45,8 +45,7 @@ else:
             df = df_raw.copy()
             df['Market_Ret'] = df['Close'].pct_change()
             
-            # Step 5 for speed; change to 1 for high precision (but slower)
-            rsi_range = range(3, 253, 5) 
+            rsi_range = range(3, 253, 10) 
             ema_range = range(3, 51, 5)
             
             progress_bar = st.progress(0)
@@ -76,46 +75,58 @@ else:
     # --- MODULE 2: TRADE DETAILER ---
     elif mode == "Trade Detailer":
         st.header("📜 Trade Detailer & Advanced Scorecard")
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         in_rsi = col1.number_input("RSI Look-back", value=14, min_value=3)
         in_ema = col2.number_input("EMA (Average Line) Length", value=9, min_value=3)
+        stop_loss_pct = col3.number_input("Stop Loss % (0 to disable)", value=5.0, min_value=0.0, step=0.5)
         
         if st.button("📊 Generate Quant Report"):
             df = df_raw.copy()
             df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
             df['RSI_EMA'] = ta.ema(df['RSI'], length=in_ema)
-            df['Signal'] = (df['RSI'] > df['RSI_EMA']).astype(int)
-            df['Change'] = df['Signal'].diff()
-
+            
             trades = []
             in_trade = False
+            entry_price = 0
+
             for i in range(1, len(df)):
-                if df['Change'].iloc[i] == 1 and not in_trade:
-                    in_trade, entry_date, entry_price = True, df.index[i], df['Close'].iloc[i]
-                elif df['Change'].iloc[i] == -1 and in_trade:
-                    in_trade, exit_date, exit_price = False, df.index[i], df['Close'].iloc[i]
-                    pnl = ((exit_price - entry_price) / entry_price) * 100
-                    trades.append({
-                        "Entry Date": entry_date.date(), 
-                        "Exit Date": exit_date.date(), 
-                        "Entry Price": float(entry_price), 
-                        "Exit Price": float(exit_price), 
-                        "P&L %": float(pnl)
-                    })
+                current_price = float(df['Close'].iloc[i])
+                rsi_val = df['RSI'].iloc[i]
+                ema_val = df['RSI_EMA'].iloc[i]
+
+                if not in_trade:
+                    if rsi_val > ema_val and df['RSI'].iloc[i-1] <= df['RSI_EMA'].iloc[i-1]:
+                        in_trade, entry_date, entry_price = True, df.index[i], current_price
+                elif in_trade:
+                    sl_triggered = stop_loss_pct > 0 and current_price <= entry_price * (1 - stop_loss_pct/100)
+                    rsi_cross = rsi_val < ema_val
+                    
+                    if sl_triggered or rsi_cross:
+                        in_trade = False
+                        exit_price = entry_price * (1 - stop_loss_pct/100) if sl_triggered else current_price
+                        reason = "Stop Loss" if sl_triggered else "RSI Crossover"
+                        pnl = ((exit_price - entry_price) / entry_price) * 100
+                        trades.append({
+                            "Entry Date": entry_date.date(), "Exit Date": df.index[i].date(), 
+                            "Entry Price": round(entry_price, 2), "Exit Price": round(exit_price, 2), 
+                            "P&L %": round(pnl, 2), "Exit Reason": reason
+                        })
 
             if trades:
                 t_df = pd.DataFrame(trades)
                 
-                # --- Advanced Calculations ---
-                daily_ret = (df['Close'].pct_change() * df['Signal'].shift(1)).fillna(0)
-                cum_strategy = (1 + daily_ret).cumprod()
-                
-                total_ret_val = cum_strategy.iloc[-1] - 1
+                # --- 1. Quant Scorecard Calculations ---
+                total_ret_val = (1 + t_df['P&L %']/100).prod() - 1
                 num_years = max((df.index[-1] - df.index[0]).days / 365.25, 0.1)
                 cagr = ((1 + total_ret_val)**(1/num_years) - 1) if total_ret_val > -1 else -1
+                
+                # Equity Curve for Max DD
+                daily_log_ret = pd.Series(0.0, index=df.index)
+                for _, row in t_df.iterrows():
+                    daily_log_ret.loc[pd.to_datetime(row['Exit Date'])] = row['P&L %'] / 100
+                cum_strategy = (1 + daily_log_ret).cumprod()
                 max_dd_val = ((cum_strategy - cum_strategy.cummax()) / cum_strategy.cummax()).min()
                 
-                # Win/Loss Calculations
                 win_rate = (t_df['P&L %'] > 0).mean()
                 avg_win = t_df[t_df['P&L %'] > 0]['P&L %'].mean() if not t_df[t_df['P&L %'] > 0].empty else 0
                 avg_loss = abs(t_df[t_df['P&L %'] < 0]['P&L %'].mean()) if not t_df[t_df['P&L %'] < 0].empty else 0
@@ -125,7 +136,7 @@ else:
                 sum_losses = abs(t_df[t_df['P&L %'] < 0]['P&L %'].sum())
                 profit_factor = sum_gains / sum_losses if sum_losses != 0 else np.inf
 
-                # --- 1. Quant Scorecard ---
+                # --- 2. Display Scorecard ---
                 st.subheader("📊 Pro-Tracer Quant Scorecard")
                 s1, s2, s3, s4 = st.columns(4)
                 s1.metric("Total Return", f"{total_ret_val*100:.2f}%")
@@ -139,14 +150,25 @@ else:
                 s7.metric("Avg Trade %", f"{t_df['P&L %'].mean():.2f}%")
                 s8.metric("Num Trades", len(t_df))
 
-                # --- 2. Compounding Calculator ---
-                st.subheader("💰 The Power of Compounding")
+                # --- 3. Visual Analysis (Pie Chart & P&L) ---
+                st.write("---")
+                chart_col1, chart_col2 = st.columns(2)
+                with chart_col1:
+                    st.write("### Exit Reason Breakdown")
+                    exit_counts = t_df['Exit Reason'].value_counts()
+                    fig, ax = plt.subplots()
+                    ax.pie(exit_counts, labels=exit_counts.index, autopct='%1.1f%%', startangle=90, colors=['#ff9999','#66b3ff'])
+                    ax.axis('equal') 
+                    st.pyplot(fig)
+                with chart_col2:
+                    st.write("### P&L % per Trade")
+                    st.bar_chart(t_df['P&L %'])
+
+                # --- 4. Compounding Chart ---
+                st.subheader("💰 The Power of Compounding (Starting ₹1,00,000)")
                 initial_capital = 100000
-                final_value = initial_capital * (1 + total_ret_val)
-                st.write(f"If you started with **₹1,00,000**, it would now be worth: **₹{final_value:,.2f}**")
-                
-                comp_curve = initial_capital * cum_strategy
-                st.line_chart(comp_curve)
+                st.write(f"Final Value: **₹{initial_capital * (1 + total_ret_val):,.2f}**")
+                st.line_chart(initial_capital * cum_strategy)
 
                 st.write("### Detailed Trade Ledger")
                 st.dataframe(t_df)
