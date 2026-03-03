@@ -5,109 +5,85 @@ import streamlit as st
 import datetime
 import numpy as np
 
-# --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v2.1", layout="wide")
-
-st.title("🛡️ Pro-Tracer: Risk-Managed Engine")
+# --- Page Config ---
+st.set_page_config(page_title="Pro-Tracer v2.2", layout="wide")
+st.title("🛡️ Pro-Tracer: Triple-Parameter Optimizer")
 st.sidebar.header("Global Settings")
 
-# --- Global Inputs ---
 ticker = st.sidebar.text_input("Ticker Symbol", "TRENT.NS")
-start_date = st.sidebar.date_input("Start Date", datetime.date(1990, 1, 1), min_value=datetime.date(1990, 1, 1))
+start_date = st.sidebar.date_input("Start Date", datetime.date(2018, 1, 1))
 end_date = st.sidebar.date_input("End Date", datetime.date.today())
-
-mode = st.sidebar.radio("Select Module", ["Brute-Force Optimizer", "Trade Detailer"])
 
 @st.cache_data
 def get_data(symbol, start, end):
-    try:
-        data = yf.download(symbol, start=start, end=end)
-        if not data.empty:
-            if isinstance(data.columns, pd.MultiIndex):
-                data.columns = data.columns.get_level_values(0)
-            return data
-    except Exception as e:
-        st.error(f"Data error: {e}")
-    return pd.DataFrame()
+    data = yf.download(symbol, start=start, end=end)
+    if not data.empty and isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+    return data
 
 df_raw = get_data(ticker, start_date, end_date)
 
 if df_raw.empty:
-    st.warning("Awaiting data...")
+    st.warning("Please enter a valid ticker.")
 else:
-    if mode == "Brute-Force Optimizer":
-        st.header("🔍 Optimizer")
-        st.info("Stop Loss optimization coming soon. Currently optimizing RSI/EMA core.")
-        # ... [Previous Optimizer Code remains the same for the core logic] ...
+    st.header("🔍 Brute-Force: RSI + EMA + Stop Loss")
+    st.info("Finding the combination that maximizes ROI while minimizing Drawdown.")
 
-    elif mode == "Trade Detailer":
-        st.header("📜 Trade Detailer with Stop Loss")
+    # Optimization Ranges
+    # We use steps (e.g., 10) to keep the web-app fast. Change to 1 for maximum precision.
+    rsi_range = range(10, 101, 10) 
+    ema_range = range(5, 31, 5)
+    sl_range = [3, 5, 8, 12] # Testing 3%, 5%, 8%, and 12% Stop Losses
+
+    if st.button("🚀 Run Triple Optimization"):
+        results = []
+        df = df_raw.copy()
         
-        c1, c2, c3 = st.columns(3)
-        in_rsi = c1.number_input("RSI Length", value=14)
-        in_ema = c2.number_input("EMA (Average Line)", value=9)
-        sl_pct = c3.number_input("Stop Loss % (0 to disable)", value=5.0)
+        # Calculate Market Returns
+        df['Ret'] = df['Close'].pct_change()
         
-        if st.button("📊 Run Backtest"):
-            df = df_raw.copy()
-            df['RSI'] = ta.rsi(df['Close'], length=in_rsi)
-            df['RSI_EMA'] = ta.ema(df['RSI'], length=in_ema)
+        progress_bar = st.progress(0)
+        total_steps = len(rsi_range) * len(ema_range) * len(sl_range)
+        current_step = 0
+
+        for r_len in rsi_range:
+            rsi_series = ta.rsi(df['Close'], length=r_len)
             
-            trades = []
-            in_trade = False
-            entry_price = 0
-            
-            # Logic Loop with Stop Loss
-            for i in range(1, len(df)):
-                current_price = float(df['Close'].iloc[i])
-                rsi_val = df['RSI'].iloc[i]
-                ema_val = df['RSI_EMA'].iloc[i]
+            for e_len in ema_range:
+                rsi_ema = ta.ema(rsi_series, length=e_len)
                 
-                # ENTRY: RSI crosses above EMA
-                if not in_trade:
-                    if rsi_val > ema_val and df['RSI'].iloc[i-1] <= df['RSI_EMA'].iloc[i-1]:
-                        in_trade = True
-                        entry_date = df.index[i]
-                        entry_price = current_price
-                        stop_price = entry_price * (1 - (sl_pct / 100))
-                
-                # EXIT: Either RSI crosses below EMA OR Stop Loss is hit
-                elif in_trade:
-                    hit_sl = sl_pct > 0 and current_price <= stop_price
-                    rsi_exit = rsi_val < ema_val
+                for sl_val in sl_range:
+                    current_step += 1
+                    # Simple simulation of the Stop Loss logic
+                    # 1. Base Strategy (RSI > EMA)
+                    signal = (rsi_series > rsi_ema).astype(int)
                     
-                    if hit_sl or rsi_exit:
-                        in_trade = False
-                        exit_date = df.index[i]
-                        exit_price = stop_price if hit_sl else current_price
-                        exit_type = "STOP LOSS" if hit_sl else "RSI CROSS"
-                        
-                        pnl = ((exit_price - entry_price) / entry_price) * 100
-                        trades.append({
-                            "Entry Date": entry_date.date(),
-                            "Exit Date": exit_date.date(),
-                            "Entry Price": round(entry_price, 2),
-                            "Exit Price": round(exit_price, 2),
-                            "P&L %": round(pnl, 2),
-                            "Exit Reason": exit_type
-                        })
+                    # 2. Apply Returns
+                    strat_ret = (df['Ret'] * signal.shift(1)).fillna(0)
+                    
+                    # 3. Stop Loss Filter: If a daily loss exceeds the SL, we cap it.
+                    # This is a simplified "Daily Stop" for the optimizer.
+                    # For precise trade-by-trade stops, use the 'Trade Detailer' module.
+                    strat_ret = strat_ret.apply(lambda x: max(x, -sl_val/100))
+                    
+                    cum_ret = (1 + strat_ret).cumprod()
+                    total_return = cum_ret.iloc[-1] - 1
+                    max_dd = ((cum_ret - cum_ret.cummax()) / cum_ret.cummax()).min()
+                    
+                    results.append({
+                        'RSI': r_len,
+                        'EMA': e_len,
+                        'StopLoss %': sl_val,
+                        'ROI %': round(total_return * 100, 2),
+                        'Max_DD %': round(max_dd * 100, 2),
+                        'Profit/DD Ratio': round(abs(total_return/max_dd), 2) if max_dd != 0 else 0
+                    })
+                    
+            progress_bar.progress(current_step / total_steps)
 
-            if trades:
-                t_df = pd.DataFrame(trades)
-                
-                # Metrics
-                win_rate = (t_df['P&L %'] > 0).mean()
-                total_ret = (t_df['P&L %']/100 + 1).prod() - 1
-                
-                st.subheader("📊 Quant Scorecard")
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Total Return", f"{total_ret*100:.2f}%")
-                m2.metric("Win Rate", f"{win_rate*100:.1f}%")
-                m3.metric("Stop Loss Trades", len(t_df[t_df['Exit Reason'] == "STOP LOSS"]))
-                
-                st.write("### Detailed Trade Ledger")
-                st.dataframe(t_df)
-                
-                st.write("### Equity Curve (Compounded)")
-                strat_cum = (t_df['P&L %']/100 + 1).cumprod()
-                st.line_chart(strat_cum)
+        res_df = pd.DataFrame(results)
+        st.success("Optimization Complete!")
+        
+        st.write("### Top 15 Combinations (Ranked by Profit/DD Ratio)")
+        # We sort by Profit/DD Ratio because that finds the most "Stable" strategy
+        st.dataframe(res_df.sort_values('Profit/DD Ratio', ascending=False).head(15))
