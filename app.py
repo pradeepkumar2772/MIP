@@ -3,82 +3,80 @@ import pandas as pd
 import pandas_ta as ta
 import streamlit as st
 import datetime
+import numpy as np
 
 # --- Page Configuration ---
-st.set_page_config(page_title="Pro-Tracer v8.3", layout="wide")
+st.set_page_config(page_title="Pro-Tracer v9.0", layout="wide")
+st.title("🛡️ Pro-Tracer: Dual-Benchmark Alpha Suite")
 
-st.title("🛡️ Pro-Tracer: Volume-Confirmed GMMA Squeeze")
-
-# --- SIDEBAR: SETTINGS & LIVE ALERTS ---
-st.sidebar.header("Strategy Settings")
 ticker = st.sidebar.text_input("Ticker Symbol", "BRITANNIA.NS")
-start_date = st.sidebar.date_input("Start Date", datetime.date(2015, 1, 1))
-
-c1, c2 = st.sidebar.columns(2)
-comp_threshold = c1.slider("Squeeze %", 0.1, 2.0, 0.8)
-rvol_threshold = c2.number_input("Min RVOL (x)", value=1.5, step=0.1)
+start_date = st.sidebar.date_input("Start Date", datetime.date(2023, 1, 1))
 
 @st.cache_data
-def get_confirmed_data(symbol, start):
-    df = yf.download(symbol, start=start)
-    if df.empty: return pd.DataFrame()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+def get_alpha_data(symbol, start):
+    # Fetching Stock, Sector Index, and Market Index
+    s_df = yf.download(symbol, start=start)
+    fmcg_df = yf.download("NIFTY_FMCG.NS", start=start)
+    nifty_df = yf.download("^NSEI", start=start)
     
-    # GMMA Logic
-    st_p, lt_p = [3, 5, 8, 10, 12, 15], [30, 35, 40, 45, 50, 60]
-    for p in st_p: df[f'ST_{p}'] = ta.ema(df['Close'], length=p)
-    for p in lt_p: df[f'LT_{p}'] = ta.ema(df['Close'], length=p)
-    
-    # Width & Volume Logic
-    df['LT_Max'] = df[[f'LT_{p}' for p in lt_p]].max(axis=1)
-    df['LT_Min'] = df[[f'LT_{p}' for p in lt_p]].min(axis=1)
-    df['LT_Width_Pct'] = ((df['LT_Max'] - df['LT_Min']) / df['LT_Min']) * 100
-    df['ST_Min'] = df[[f'ST_{p}' for p in st_p]].min(axis=1)
-    
-    # RVOL Calculation (Volume vs 20-day MA)
-    df['Vol_MA'] = df['Volume'].rolling(window=20).mean()
-    df['RVOL'] = df['Volume'] / df['Vol_MA']
+    # Flatten MultiIndex columns if present
+    for d in [s_df, fmcg_df, nifty_df]:
+        if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
+
+    df = pd.DataFrame(index=s_df.index)
+    df['Close'] = s_df['Close']
+    df['FMCG_Close'] = fmcg_df['Close']
+    df['Nifty_Close'] = nifty_df['Close']
+    df['Volume'] = s_df['Volume']
     return df
 
-df = get_confirmed_data(ticker, start_date)
+df = get_alpha_data(ticker, start_date)
 
 if not df.empty:
-    # --- LIVE VOLUME-CONFIRMED ALERT ---
-    curr_w = df['LT_Width_Pct'].iloc[-1]
-    curr_rvol = df['RVOL'].iloc[-1]
-    is_sqz = curr_w <= comp_threshold
+    # --- RELATIVE STRENGTH CALCULATIONS ---
+    # RS vs Nifty 50 (Market Benchmark)
+    df['RS_Market'] = df['Close'] / df['Nifty_Close']
+    df['RS_Market_Trend'] = ta.ema(df['RS_Market'], length=50)
     
-    st.sidebar.subheader("📢 Institutional Monitor")
-    if is_sqz:
-        st.sidebar.warning(f"⚠️ SQUEEZE: Width {curr_w:.2f}%. Volume: {curr_rvol:.2f}x")
-    elif df['ST_Min'].iloc[-1] > df['LT_Max'].iloc[-1] and curr_rvol > rvol_threshold:
-        st.sidebar.success(f"🚀 BREAKOUT CONFIRMED: High Vol ({curr_rvol:.2f}x) detected!")
+    # RS vs Nifty FMCG (Sector Benchmark)
+    df['RS_Sector'] = df['Close'] / df['FMCG_Close']
+    df['RS_Sector_Trend'] = ta.ema(df['RS_Sector'], length=50)
 
-    # --- CONFIRMED BREAKOUT BACKTESTER ---
-    trades, in_trade = [], False
+    # GMMA & RSI Logic
+    df['RSI'] = ta.rsi(df['Close'], length=13)
+    df['ST_Avg'] = df['Close'].rolling(window=8).mean() 
+    df['LT_Avg'] = df['Close'].rolling(window=45).mean()
+    df['LT_Width'] = (df['Close'].rolling(window=30).max() - df['Close'].rolling(window=60).min())
+
+    # --- ALPHA FILTERS ---
+    # Buy only when Stock > Sector AND Sector is showing resilience
+    df['Alpha_Buy'] = (df['RS_Sector'] > df['RS_Sector_Trend']) & (df['RS_Market'] > df['RS_Market_Trend'])
+
+    # --- SIDEBAR STATUS ---
+    st.sidebar.subheader("📊 Alpha Scorecard")
+    is_leader = df['Alpha_Buy'].iloc[-1]
+    st.sidebar.markdown(f"**Sector Leader:** {'✅ YES' if is_leader else '❌ NO'}")
+
+    # --- BACKTESTER ---
+    trades, in_trade, peak_p = [], False, 0
     for i in range(1, len(df)):
-        st_min, lt_max = df['ST_Min'].iloc[i], df['LT_Max'].iloc[i]
-        rvol = df['RVOL'].iloc[i]
+        curr_p, rsi_v = float(df['Close'].iloc[i]), df['RSI'].iloc[i]
         
         if not in_trade:
-            # ENTRY: Ribbon Breakout + Institutional Volume
-            if st_min > lt_max and rvol >= rvol_threshold:
-                in_trade = True
-                was_sqz = any(df['LT_Width_Pct'].iloc[i-15:i] <= comp_threshold)
-                trades.append({
-                    "Date": df.index[i].date(),
-                    "Entry P": round(df['Close'].iloc[i], 2),
-                    "Entry RVOL": round(rvol, 2),
-                    "Context": "💎 Squeeze + Vol" if was_sqz else "📈 Momentum + Vol"
-                })
+            # ALPHA ENTRY: GMMA + RSI + Sector Strength
+            if (df['Alpha_Buy'].iloc[i] and rsi_v > 55 and df['ST_Avg'].iloc[i] > df['LT_Avg'].iloc[i]):
+                in_trade, entry_date, entry_price = True, df.index[i], curr_p
+                peak_p = curr_p
         elif in_trade:
-            if st_min < lt_max:
+            peak_p = max(peak_p, curr_p)
+            # DUAL EXIT: RSI or 10% Trailing Stop
+            if rsi_v < 45 or curr_p <= (peak_p * 0.90):
                 in_trade = False
-                pnl = ((df['Close'].iloc[i] - trades[-1]['Entry P']) / trades[-1]['Entry P']) * 100
-                trades[-1]['Exit Date'] = df.index[i].date()
-                trades[-1]['ROI %'] = round(pnl, 2)
+                pnl = ((curr_p - entry_price) / entry_price) * 100
+                trades.append({"Entry": entry_date.date(), "Exit": df.index[i].date(), "P&L %": round(pnl, 2)})
 
     if trades:
-        st.write("### 🏆 Confirmed Trade History")
-        st.table(pd.DataFrame(trades))
+        t_df = pd.DataFrame(trades)
+        st.subheader("🏆 Strategy Performance (Sector Alpha Filter)")
+        st.metric("Total Alpha ROI", f"{t_df['P&L %'].sum():.1f}%")
+        st.dataframe(t_df, use_container_width=True)
