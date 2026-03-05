@@ -1,84 +1,71 @@
 import yfinance as yf
 import pandas as pd
+import pandas_ta as ta
 import streamlit as st
 import datetime
 
-st.set_page_config(page_title="NSE Mega Sector Scanner", layout="wide")
-st.title("📊 NSE Mega Sector & Theme Scanner")
+# --- Page Configuration ---
+st.set_page_config(page_title="RS Comparative Report", layout="wide")
+st.title("📊 Relative Strength Comparative Report")
 
-# Comprehensive Ticker List based on your uploaded image
-sectors = {
-    "Nifty 50": "^NSEI",
-    "Nifty Consumer Durables": "NIFTY_CONSR_DURBL.NS", 
-    "Nifty Healthcare": "NIFTY_HEALTHCARE.NS",
-    "Nifty India Digital": "NIFTY_IND_DIGITAL.NS",
-    "Nifty India Manufacturing": "NIFTY_INDIA_MFG.NS",
-    "Nifty Oil and Gas": "NIFTY_OIL_AND_GAS.NS",
-    "Nifty Auto": "^CNXAUTO",
-    "Nifty Bank": "^NSEBANK",
-    "Nifty CPSE": "NIFTY_CPSE.NS",
-    "Nifty Capital Markets": "NIFTY_CAP_MKT.NS",
-    "Nifty Chemicals": "NIFTY_CHEMICALS.NS",
-    "Nifty Commodities": "^CNXCMDT",
-    "Nifty Consumption": "^CNXCONSUMP",
-    "Nifty Core Housing": "NIFTY_CORE_HOUSING.NS",
-    "Nifty EV & New Age Auto": "NIFTY_EV_NEW_AGE.NS",
-    "Nifty Energy": "^CNXENERGY",
-    "Nifty FMCG": "^CNXFMCG",
-    "Nifty Fin Service": "^CNXFIN",
-    "Nifty Housing": "NIFTY_HOUSING.NS",
-    "Nifty IT": "^CNXIT",
-    "Nifty India Defence": "NIFTY_IND_DEFENCE.NS",
-    "Nifty Infrastructure": "^CNXINFRA",
-    "Nifty MNC": "^CNXMNC",
-    "Nifty Metal": "^CNXMETAL",
-    "Nifty Pharma": "^CNXPHARMA",
-    "Nifty PSE": "^CNXPSE",
-    "Nifty PSU Bank": "^CNXPSUBANK",
-    "Nifty Realty": "^CNXREALTY",
-    "Nifty Serv Sector": "^CNXSERVICE"
-}
-
-start_date = st.sidebar.date_input("Analysis Start Date", datetime.date(2026, 1, 1))
+# --- User Inputs ---
+ticker = st.sidebar.text_input("Numerator (Stock)", "BRITANNIA.NS")
+benchmark = st.sidebar.text_input("Denominator (Benchmark)", "^NSEI")
+timeframe = st.sidebar.selectbox("Timeframe", ["65D", "125D", "250D"])
+lookback = int(timeframe.replace('D', ''))
 
 @st.cache_data
-def get_mega_performance(sector_dict, start):
-    performance_data = []
+def get_rs_report_data(stock, bench, days):
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=days + 50) # Buffer for EMA
     
-    # Get Nifty 50 Benchmark
-    nifty = yf.download(sector_dict["Nifty 50"], start=start)
-    if nifty.empty: return pd.DataFrame()
-    if isinstance(nifty.columns, pd.MultiIndex): nifty.columns = nifty.columns.get_level_values(0)
+    s_data = yf.download(stock, start=start, end=end)['Close']
+    b_data = yf.download(bench, start=start, end=end)['Close']
     
-    n_start, n_end = float(nifty['Close'].iloc[0]), float(nifty['Close'].iloc[-1])
-    nifty_perf = ((n_end - n_start) / n_start) * 100
+    if s_data.empty or b_data.empty: return pd.DataFrame()
     
-    for name, ticker in sector_dict.items():
-        if name == "Nifty 50": continue
-        try:
-            data = yf.download(ticker, start=start)
-            if not data.empty:
-                if isinstance(data.columns, pd.MultiIndex): data.columns = data.columns.get_level_values(0)
-                
-                s_start, s_end = float(data['Close'].iloc[0]), float(data['Close'].iloc[-1])
-                abs_return = ((s_end - s_start) / s_start) * 100
-                alpha = abs_return - nifty_perf
-                
-                performance_data.append({
-                    "Sector/Theme": name,
-                    "Return %": round(abs_return, 2),
-                    "Alpha vs Nifty": round(alpha, 2),
-                    "Status": "🚀 Leading" if alpha > 0 else "⚓ Lagging"
-                })
-        except: continue
-            
-    return pd.DataFrame(performance_data).sort_values("Alpha vs Nifty", ascending=False)
+    df = pd.DataFrame(index=s_data.index)
+    df['Stock_Price'] = s_data
+    df['Bench_Price'] = b_data
+    
+    # 1. Ratio Calculation
+    df['RS_Ratio'] = df['Stock_Price'] / df['Bench_Price']
+    
+    # 2. RS Trend (EMA of the Ratio)
+    df['RS_EMA'] = ta.ema(df['RS_Ratio'], length=20)
+    
+    # 3. Ratio Performance (% Change in Ratio)
+    df['Ratio_Perf'] = df['RS_Ratio'].pct_change(days) * 100
+    
+    return df.tail(lookback)
 
-perf_df = get_mega_performance(sectors, start_date)
+df = get_rs_report_data(ticker, benchmark, lookback)
 
-if not perf_df.empty:
-    st.write(f"### Performance Leaderboard since {start_date}")
-    st.dataframe(perf_df, use_container_width=True, hide_index=True)
+if not df.empty:
+    # --- Generating the Report Table ---
+    report = []
     
-    top_theme = perf_df.iloc[0]
-    st.info(f"💡 **Trading Tip:** The strongest current theme is **{top_theme['Sector/Theme']}**. Focus your GMMA breakout searches here for higher probability setups.")
+    curr_ratio = df['RS_Ratio'].iloc[-1]
+    curr_ema = df['RS_EMA'].iloc[-1]
+    perf = df['Ratio_Perf'].iloc[-1]
+    
+    # Commentary Logic
+    if perf > 0:
+        comment = f"{ticker} outperformed {benchmark}."
+    else:
+        comment = f"RS Divergence. {ticker} is underperforming {benchmark}."
+        
+    # RS Trend Logic
+    rs_trend = "Bullish - Continuation" if curr_ratio > curr_ema else "Relative Weakness - Bearish"
+    
+    report.append({
+        "Scrip": ticker,
+        "Closing Price": round(df['Stock_Price'].iloc[-1], 2),
+        "Benchmark Trend": "Up" if df['Bench_Price'].iloc[-1] > df['Bench_Price'].iloc[-5] else "Down",
+        "Commentary": comment,
+        "Ratio Performance": f"{round(perf, 2)}%",
+        "RS Trend": rs_trend
+    })
+
+    st.write(f"### Output Window ({timeframe})")
+    st.table(pd.DataFrame(report))
