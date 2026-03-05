@@ -3,10 +3,10 @@ import pandas as pd
 import streamlit as st
 import datetime
 
-st.set_page_config(page_title="NSE Mega RS Scanner", layout="wide")
-st.title("📊 Complete Sectoral Relative Strength Report")
+st.set_page_config(page_title="NSE Interactive RS Scanner", layout="wide")
+st.title("📊 Sectoral Relative Strength Report (Sortable)")
 
-# --- 1. FULL SECTOR LIST (Corrected Tickers) ---
+# --- 1. COMPLETE SECTOR LIST (From your previous request) ---
 sectors = {
     "NIFTY CONSR DURBL": "NIFTY_CONSR_DURBL.NS", "NIFTY HEALTHCARE": "NIFTY_HEALTHCARE.NS",
     "NIFTY IND DIGITAL": "NIFTY_IND_DIGITAL.NS", "NIFTY INDIA MFG": "NIFTY_INDIA_MFG.NS",
@@ -32,7 +32,7 @@ sectors = {
     "Nifty Waves": "NIFTY_WAVES.NS"
 }
 
-# --- 2. TIMEFRAME SELECTION ---
+# --- 2. TIMEFRAME SETTINGS ---
 intervals = {"Hourly": "1h", "Daily": "1d", "Weekly": "1wk", "Monthly": "1mo"}
 selected_int = st.sidebar.selectbox("Select Timeframe", list(intervals.keys()))
 
@@ -40,8 +40,6 @@ selected_int = st.sidebar.selectbox("Select Timeframe", list(intervals.keys()))
 def get_mega_report(sector_map, interval_name):
     report_list = []
     interval = intervals[interval_name]
-    
-    # Calculate Data Buffer
     days_back = 50 if interval_name == "Hourly" else 730
     start_date = datetime.datetime.now() - datetime.timedelta(days=days_back)
     
@@ -68,18 +66,15 @@ def get_mega_report(sector_map, interval_name):
             rs_ema = ratio.ewm(span=20).mean().iloc[-1]
             rs_trend = "Bullish - Continuation" if ratio_end > rs_ema else "Relative Weakness - Bearish"
             
-            # Commentary Logic based on CSV
-            if perf > 0:
-                comment = f"{name} went up along with Nifty 50 and outperformed"
-            else:
-                comment = f"RS Divergence. {name} is underperforming Nifty 50"
+            # Commentary Logic
+            comment = f"{name} outperformed Nifty 50" if perf > 0 else f"RS Divergence. {name} is lagging"
                 
             report_list.append({
                 "Scrip": name,
                 "LCP": round(float(s_data.iloc[-1]), 2),
                 "Benchmark Trend": b_trend,
                 "Commentary": comment,
-                "Ratio Performance": f"{round(perf, 2)}%",
+                "Ratio Performance (%)": round(perf, 2), # Keep as number for sorting
                 "RS Trend": rs_trend
             })
         except: continue
@@ -88,5 +83,18 @@ def get_mega_report(sector_map, interval_name):
 final_df = get_mega_report(sectors, selected_int)
 
 if not final_df.empty:
-    st.write(f"### Output Window ({selected_int})")
-    st.table(final_df)
+    # Pre-sort by performance descending
+    final_df = final_df.sort_values("Ratio Performance (%)", ascending=False)
+    
+    st.write(f"### Interactive Output Window ({selected_int})")
+    st.info("💡 Tip: Click on any column header to change the sort order.")
+    
+    # Use st.dataframe for interactive sorting
+    st.dataframe(
+        final_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Ratio Performance (%)": st.column_config.NumberColumn(format="%.2f%%")
+        }
+    )
